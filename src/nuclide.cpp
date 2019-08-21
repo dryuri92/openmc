@@ -58,7 +58,7 @@ Nuclide::Nuclide(hid_t group, const std::vector<double>& temperature, int i_nucl
   // Determine temperatures available
   hid_t kT_group = open_group(group, "kTs");
   std::vector<int> temps_to_read;
-  get_toread_temperature(&kT_group, &temps_to_read, &temperature);
+  get_toread_temperature(kT_group, temps_to_read, name_, temperature);
   
   // Sort temperatures to read
   std::sort(temps_to_read.begin(), temps_to_read.end());

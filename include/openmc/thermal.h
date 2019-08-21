@@ -38,7 +38,7 @@ constexpr int SAB_ELASTIC_COHERENT   {4}; // Coherent elastic scattering (Bragg 
 //==============================================================================
 //! Read temperatures to read from hdf5 library
 void get_toread_temperature(hid_t kT_group, std::vector<double>& temps_available,
-                               const std::vector<double>& temperature);
+                            const std::string& libname, const std::vector<double>& temperature);
 //! Collect/normalize the tracklength keff from each process
 class ThermalScattering;
 

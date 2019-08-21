@@ -27,7 +27,7 @@ namespace openmc {
 // Non-member functions
 //==============================================================================
 //! Read temperatures to read from hdf5 library
-void get_toread_temperature(hid_t kT_group, std::vector<double>& temps_available,
+void get_toread_temperature(hid_t kT_group, std::vector<int>& temps_to_read,
                             const std::string& libname, const std::vector<double>& temperature)
 {
   

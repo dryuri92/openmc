@@ -27,8 +27,8 @@ namespace openmc {
 // Non-member functions
 //==============================================================================
 //! Read temperatures to read from hdf5 library
-void get_toread_temperature(hid_t& kT_group, std::vector<double>& temps_available,
-                               const std::vector<double>& temperature)
+void get_toread_temperature(hid_t kT_group, std::vector<double>& temps_available,
+                            const std::string& libname, const std::vector<double>& temperature)
 {
   
   std::vector<double> temps_available;
@@ -44,7 +44,7 @@ void get_toread_temperature(hid_t& kT_group, std::vector<double>& temps_availabl
   // If only one temperature is available, revert to nearest temperature
   if (temps_available.size() == 1 && settings::temperature_method == TEMPERATURE_INTERPOLATION) {
     if (mpi::master) {
-      warning("Cross sections for " + name_ + " are only available at one "
+      warning("Cross sections for " + libname + " are only available at one "
         "temperature. Reverting to nearest temperature method.");
     }
     settings::temperature_method = TEMPERATURE_NEAREST;
@@ -87,14 +87,14 @@ void get_toread_temperature(hid_t& kT_group, std::vector<double>& temps_availabl
 
           // Write warning for resonance scattering data if 0K is not available
           if (std::abs(T_actual - T_desired) > 0 && T_desired == 0 && mpi::master) {
-            warning(name_ + " does not contain 0K data needed for resonance "
+            warning(libname + " does not contain 0K data needed for resonance "
               "scattering options selected. Using data at " + std::to_string(T_actual)
               + " K instead.");
           }
         }
       } else {
         fatal_error("Nuclear data library does not contain cross sections for " +
-          name_ + " at or near " + std::to_string(T_desired) + " K.");
+          libname + " at or near " + std::to_string(T_desired) + " K.");
       }
     }
     break;
@@ -120,7 +120,7 @@ void get_toread_temperature(hid_t& kT_group, std::vector<double>& temps_availabl
 
       if (!found_pair) {
         fatal_error("Nuclear data library does not contain cross sections for " +
-          name_ +" at temperatures that bound " + std::to_string(T_desired) + " K.");
+          libname +" at temperatures that bound " + std::to_string(T_desired) + " K.");
       }
     }
     break;
@@ -160,7 +160,7 @@ ThermalScattering::ThermalScattering(hid_t group, const std::vector<double>& tem
   // Read temperatures
   hid_t kT_group = open_group(group, "kTs");
   std::vector<int> temps_to_read;
-  get_toread_temperature(&kT_group, &temps_to_read, &temperature); 
+  get_toread_temperature(kT_group, temps_to_read, name_, temperature); 
 
   // Sort temperatures to read
   std::sort(temps_to_read.begin(), temps_to_read.end());

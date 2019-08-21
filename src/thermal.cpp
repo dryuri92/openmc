@@ -11,6 +11,9 @@
 #include "xtensor/xtensor.hpp"
 #include "xtensor/xview.hpp"
 
+#include "openmc/message_passing.h"
+#include "openmc/string_utils.h"
+#include "openmc/container_util.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
 #include "openmc/random_lcg.h"

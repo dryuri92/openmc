@@ -71,6 +71,8 @@ int openmc_finalize()
   settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0};
   settings::entropy_on = false;
   settings::gen_per_batch = 1;
+  settings::index_entropy_mesh = -1;
+  settings::index_ufs_mesh = -1;
   settings::legendre_to_tabular = true;
   settings::legendre_to_tabular_points = -1;
   settings::n_particles = -1;
@@ -112,15 +114,10 @@ int openmc_finalize()
   simulation::satisfy_triggers = false;
   simulation::total_gen = 0;
 
-  simulation::entropy_mesh = nullptr;
-  simulation::ufs_mesh = nullptr;
-
   data::energy_max = {INFTY, INFTY};
   data::energy_min = {0.0, 0.0};
-  data::temperature_min = 0.0;
-  data::temperature_max = INFTY;
   model::root_universe = -1;
-  openmc::openmc_set_seed(DEFAULT_SEED);
+  openmc_set_seed(DEFAULT_SEED);
 
   // Deallocate arrays
   free_memory();
@@ -162,6 +159,6 @@ int openmc_hard_reset()
   simulation::total_gen = 0;
 
   // Reset the random number generator state
-  openmc::openmc_set_seed(DEFAULT_SEED);
+  openmc_set_seed(DEFAULT_SEED);
   return 0;
 }

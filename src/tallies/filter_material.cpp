@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include "openmc/capi.h"
+#include "openmc/error.h"
 #include "openmc/material.h"
 #include "openmc/xml_interface.h"
 
@@ -11,39 +12,30 @@ namespace openmc {
 void
 MaterialFilter::from_xml(pugi::xml_node node)
 {
-  // Get material IDs and convert to indices in the global materials vector
-  auto mats = get_node_array<int32_t>(node, "bins");
-  for (auto& m : mats) {
-    auto search = model::material_map.find(m);
-    if (search == model::material_map.end()) {
-      std::stringstream err_msg;
-      err_msg << "Could not find material " << m
-              << " specified on tally filter.";
-      throw std::runtime_error{err_msg.str()};
-    }
-    m = search->second;
-  }
-
-  this->set_materials(mats);
+  materials_ = get_node_array<int32_t>(node, "bins");
+  n_bins_ = materials_.size();
 }
 
 void
-MaterialFilter::set_materials(gsl::span<const int32_t> materials)
+MaterialFilter::initialize()
 {
-  // Clear existing materials
-  materials_.clear();
-  materials_.reserve(materials.size());
-  map_.clear();
-
-  // Update materials and mapping
-  for (auto& index : materials) {
-    Expects(index >= 0);
-    Expects(index < model::materials.size());
-    materials_.push_back(index);
-    map_[index] = materials_.size() - 1;
+  // Convert material IDs to indices of the global array.
+  for (auto& m : materials_) {
+    auto search = model::material_map.find(m);
+    if (search != model::material_map.end()) {
+      m = search->second;
+    } else {
+      std::stringstream err_msg;
+      err_msg << "Could not find material " << m
+              << " specified on tally filter.";
+      fatal_error(err_msg);
+    }
   }
 
-  n_bins_ = materials_.size();
+  // Populate the index->bin map.
+  for (int i = 0; i < materials_.size(); i++) {
+    map_[materials_[i]] = i;
+  }
 }
 
 void
@@ -77,7 +69,7 @@ MaterialFilter::text_label(int bin) const
 //==============================================================================
 
 extern "C" int
-openmc_material_filter_get_bins(int32_t index, const int32_t** bins, size_t* n)
+openmc_material_filter_get_bins(int32_t index, int32_t** bins, int32_t* n)
 {
   // Make sure this is a valid index to an allocated filter.
   if (int err = verify_filter(index)) return err;
@@ -93,13 +85,13 @@ openmc_material_filter_get_bins(int32_t index, const int32_t** bins, size_t* n)
   }
 
   // Output the bins.
-  *bins = filt->materials().data();
-  *n = filt->materials().size();
+  *bins = filt->materials_.data();
+  *n = filt->materials_.size();
   return 0;
 }
 
 extern "C" int
-openmc_material_filter_set_bins(int32_t index, size_t n, const int32_t* bins)
+openmc_material_filter_set_bins(int32_t index, int32_t n, const int32_t* bins)
 {
   // Make sure this is a valid index to an allocated filter.
   if (int err = verify_filter(index)) return err;
@@ -115,7 +107,12 @@ openmc_material_filter_set_bins(int32_t index, size_t n, const int32_t* bins)
   }
 
   // Update the filter.
-  filt->set_materials({bins, n});
+  filt->materials_.clear();
+  filt->materials_.resize(n);
+  for (int i = 0; i < n; i++) filt->materials_[i] = bins[i];
+  filt->n_bins_ = filt->materials_.size();
+  filt->map_.clear();
+  for (int i = 0; i < n; i++) filt->map_[filt->materials_[i]] = i;
   return 0;
 }
 

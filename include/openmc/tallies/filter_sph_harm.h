@@ -3,8 +3,6 @@
 
 #include <string>
 
-#include <gsl/gsl>
-
 #include "openmc/tallies/filter.h"
 
 namespace openmc {
@@ -20,13 +18,7 @@ enum class SphericalHarmonicsCosine {
 class SphericalHarmonicsFilter : public Filter
 {
 public:
-  //----------------------------------------------------------------------------
-  // Constructors, destructors
-
   ~SphericalHarmonicsFilter() = default;
-
-  //----------------------------------------------------------------------------
-  // Methods
 
   std::string type() const override {return "sphericalharmonics";}
 
@@ -38,21 +30,6 @@ public:
   void to_statepoint(hid_t filter_group) const override;
 
   std::string text_label(int bin) const override;
-
-  //----------------------------------------------------------------------------
-  // Accessors
-
-  int order() const { return order_; }
-
-  void set_order(int order);
-
-  SphericalHarmonicsCosine cosine() const { return cosine_; }
-
-  void set_cosine(gsl::cstring_span cosine);
-
-private:
-  //----------------------------------------------------------------------------
-  // Data members
 
   int order_;
 

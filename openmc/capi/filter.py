@@ -11,7 +11,7 @@ from . import _dll
 from .core import _FortranObjectWithID
 from .error import _error_handler
 from .material import Material
-from .mesh import RegularMesh
+from .mesh import Mesh
 
 
 __all__ = ['Filter', 'AzimuthalFilter', 'CellFilter',
@@ -28,24 +28,12 @@ _dll.openmc_cell_filter_get_bins.argtypes = [
 _dll.openmc_cell_filter_get_bins.restype = c_int
 _dll.openmc_cell_filter_get_bins.errcheck = _error_handler
 _dll.openmc_energy_filter_get_bins.argtypes = [
-    c_int32, POINTER(POINTER(c_double)), POINTER(c_size_t)]
+    c_int32, POINTER(POINTER(c_double)), POINTER(c_int32)]
 _dll.openmc_energy_filter_get_bins.restype = c_int
 _dll.openmc_energy_filter_get_bins.errcheck = _error_handler
-_dll.openmc_energy_filter_set_bins.argtypes = [c_int32, c_size_t, POINTER(c_double)]
+_dll.openmc_energy_filter_set_bins.argtypes = [c_int32, c_int32, POINTER(c_double)]
 _dll.openmc_energy_filter_set_bins.restype = c_int
 _dll.openmc_energy_filter_set_bins.errcheck = _error_handler
-_dll.openmc_energyfunc_filter_set_data.restype = c_int
-_dll.openmc_energyfunc_filter_set_data.errcheck = _error_handler
-_dll.openmc_energyfunc_filter_set_data.argtypes = [
-    c_int32, c_size_t, POINTER(c_double), POINTER(c_double)]
-_dll.openmc_energyfunc_filter_get_energy.resttpe = c_int
-_dll.openmc_energyfunc_filter_get_energy.errcheck = _error_handler
-_dll.openmc_energyfunc_filter_get_energy.argtypes = [
-    c_int32, POINTER(c_size_t), POINTER(POINTER(c_double))]
-_dll.openmc_energyfunc_filter_get_y.resttpe = c_int
-_dll.openmc_energyfunc_filter_get_y.errcheck = _error_handler
-_dll.openmc_energyfunc_filter_get_y.argtypes = [
-    c_int32, POINTER(c_size_t), POINTER(POINTER(c_double))]
 _dll.openmc_filter_get_id.argtypes = [c_int32, POINTER(c_int32)]
 _dll.openmc_filter_get_id.restype = c_int
 _dll.openmc_filter_get_id.errcheck = _error_handler
@@ -65,10 +53,10 @@ _dll.openmc_legendre_filter_set_order.argtypes = [c_int32, c_int]
 _dll.openmc_legendre_filter_set_order.restype = c_int
 _dll.openmc_legendre_filter_set_order.errcheck = _error_handler
 _dll.openmc_material_filter_get_bins.argtypes = [
-    c_int32, POINTER(POINTER(c_int32)), POINTER(c_size_t)]
+    c_int32, POINTER(POINTER(c_int32)), POINTER(c_int32)]
 _dll.openmc_material_filter_get_bins.restype = c_int
 _dll.openmc_material_filter_get_bins.errcheck = _error_handler
-_dll.openmc_material_filter_set_bins.argtypes = [c_int32, c_size_t, POINTER(c_int32)]
+_dll.openmc_material_filter_set_bins.argtypes = [c_int32, c_int32, POINTER(c_int32)]
 _dll.openmc_material_filter_set_bins.restype = c_int
 _dll.openmc_material_filter_set_bins.errcheck = _error_handler
 _dll.openmc_mesh_filter_get_mesh.argtypes = [c_int32, POINTER(c_int32)]
@@ -105,7 +93,6 @@ _dll.openmc_zernike_filter_set_order.argtypes = [c_int32, c_int]
 _dll.openmc_zernike_filter_set_order.restype = c_int
 _dll.openmc_zernike_filter_set_order.errcheck = _error_handler
 _dll.tally_filters_size.restype = c_size_t
-
 
 class Filter(_FortranObjectWithID):
     __instances = WeakValueDictionary()
@@ -161,7 +148,7 @@ class EnergyFilter(Filter):
     @property
     def bins(self):
         energies = POINTER(c_double)()
-        n = c_size_t()
+        n = c_int32()
         _dll.openmc_energy_filter_get_bins(self._index, energies, n)
         return as_array(energies, (n.value,))
 
@@ -213,48 +200,6 @@ class DistribcellFilter(Filter):
 class EnergyFunctionFilter(Filter):
     filter_type = 'energyfunction'
 
-    def __new__(cls, energy=None, y=None, uid=None, new=True, index=None):
-        return super().__new__(cls, uid=uid, new=new, index=index)
-
-    def __init__(self, energy=None, y=None, uid=None, new=True, index=None):
-        if (energy is None) != (y is None):
-            raise AttributeError("Need both energy and y or neither")
-        super().__init__(uid, new, index)
-        if energy is not None:
-            self.set_data(energy, y)
-
-    def set_data(self, energy, y):
-        """Set the interpolation information for the filter
-
-        Parameters
-        ----------
-        energy : numpy.ndarray
-            Independent variable for the interpolation
-        y : numpy.ndarray
-            Dependent variable for the interpolation
-        """
-        energy_array = np.asarray(energy)
-        y_array = np.asarray(y)
-        energy_p = energy_array.ctypes.data_as(POINTER(c_double))
-        y_p = y_array.ctypes.data_as(POINTER(c_double))
-
-        _dll.openmc_energyfunc_filter_set_data(
-            self._index, len(energy_array), energy_p, y_p)
-
-    @property
-    def energy(self):
-        return self._get_attr(_dll.openmc_energyfunc_filter_get_energy)
-
-    @property
-    def y(self):
-        return self._get_attr(_dll.openmc_energyfunc_filter_get_y)
-
-    def _get_attr(self, cfunc):
-        array_p = POINTER(c_double)()
-        n = c_size_t()
-        cfunc(self._index, n, array_p)
-        return as_array(array_p, (n.value, ))
-
 
 class LegendreFilter(Filter):
     filter_type = 'legendre'
@@ -286,7 +231,7 @@ class MaterialFilter(Filter):
     @property
     def bins(self):
         materials = POINTER(c_int32)()
-        n = c_size_t()
+        n = c_int32()
         _dll.openmc_material_filter_get_bins(self._index, materials, n)
         return [Material(index=materials[i]) for i in range(n.value)]
 
@@ -310,7 +255,7 @@ class MeshFilter(Filter):
     def mesh(self):
         index_mesh = c_int32()
         _dll.openmc_mesh_filter_get_mesh(self._index, index_mesh)
-        return RegularMesh(index=index_mesh.value)
+        return Mesh(index=index_mesh.value)
 
     @mesh.setter
     def mesh(self, mesh):
@@ -329,7 +274,7 @@ class MeshSurfaceFilter(Filter):
     def mesh(self):
         index_mesh = c_int32()
         _dll.openmc_meshsurface_filter_get_mesh(self._index, index_mesh)
-        return RegularMesh(index=index_mesh.value)
+        return Mesh(index=index_mesh.value)
 
     @mesh.setter
     def mesh(self, mesh):

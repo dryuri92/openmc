@@ -44,8 +44,6 @@ class CorrelatedAngleEnergy(AngleEnergy):
 
     """
 
-    _name = 'correlated'
-
     def __init__(self, breakpoints, interpolation, energy, energy_out, mu):
         super().__init__()
         self.breakpoints = breakpoints
@@ -113,7 +111,7 @@ class CorrelatedAngleEnergy(AngleEnergy):
             HDF5 group to write to
 
         """
-        group.attrs['type'] = np.string_(self._name)
+        group.attrs['type'] = np.string_('correlated')
 
         dset = group.create_dataset('energy', data=self.energy)
         dset.attrs['interpolation'] = np.vstack((self.breakpoints,

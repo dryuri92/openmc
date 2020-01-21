@@ -17,7 +17,6 @@
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
-#include "openmc/string_utils.h"
 #include "openmc/thermal.h"
 #include "openmc/tallies/tally.h"
 
@@ -62,16 +61,12 @@ void collision(Particle* p)
   // Display information about collision
   if (settings::verbosity >= 10 || simulation::trace) {
     std::stringstream msg;
-    if (p->event_ == EVENT_KILL) {
-      msg << "    Killed. Energy = " << p->E_ << " eV.";
-    } else if (p->type_ == Particle::Type::neutron) {
+    if (p->type_ == Particle::Type::neutron) {
       msg << "    " << reaction_name(p->event_mt_) << " with " <<
         data::nuclides[p->event_nuclide_]->name_ << ". Energy = " << p->E_ << " eV.";
-    } else if (p->type_ == Particle::Type::photon) {
-      msg << "    " << reaction_name(p->event_mt_) << " with " <<
-        to_element(data::nuclides[p->event_nuclide_]->name_) << ". Energy = " << p->E_ << " eV.";
     } else {
-      msg << "    Disappeared. Energy = " << p->E_ << " eV.";
+      msg << "    " << reaction_name(p->event_mt_) << " with " <<
+        data::elements[p->event_nuclide_].name_ << ". Energy = " << p->E_ << " eV.";
     }
     write_message(msg, 1);
   }
@@ -214,6 +209,7 @@ void sample_photon_reaction(Particle* p)
 
   // Sample element within material
   int i_element = sample_element(p);
+  p->event_nuclide_ = i_element;
   const auto& micro {p->photon_xs_[i_element]};
   const auto& element {data::elements[i_element]};
 
@@ -230,7 +226,6 @@ void sample_photon_reaction(Particle* p)
   if (prob > cutoff) {
     double mu = element.rayleigh_scatter(alpha);
     p->u() = rotate_angle(p->u(), mu, nullptr);
-    p->event_ = EVENT_SCATTER;
     p->event_mt_ = COHERENT;
     return;
   }
@@ -273,7 +268,6 @@ void sample_photon_reaction(Particle* p)
     phi += PI;
     p->E_ = alpha_out*MASS_ELECTRON_EV;
     p->u() = rotate_angle(p->u(), mu, &phi);
-    p->event_ = EVENT_SCATTER;
     p->event_mt_ = INCOHERENT;
     return;
   }
@@ -325,7 +319,6 @@ void sample_photon_reaction(Particle* p)
         // Allow electrons to fill orbital and produce auger electrons
         // and fluorescent photons
         element.atomic_relaxation(shell, *p);
-        p->event_ = EVENT_ABSORB;
         p->event_mt_ = 533 + shell.index_subshell;
         p->alive_ = false;
         p->E_ = 0.0;
@@ -351,7 +344,6 @@ void sample_photon_reaction(Particle* p)
     u = rotate_angle(p->u(), mu_positron, nullptr);
     p->create_secondary(u, E_positron, Particle::Type::positron);
 
-    p->event_ = EVENT_ABSORB;
     p->event_mt_ = PAIR_PROD;
     p->alive_ = false;
     p->E_ = 0.0;
@@ -369,7 +361,6 @@ void sample_electron_reaction(Particle* p)
 
   p->E_ = 0.0;
   p->alive_ = false;
-  p->event_ = EVENT_ABSORB;
 }
 
 void sample_positron_reaction(Particle* p)
@@ -395,7 +386,6 @@ void sample_positron_reaction(Particle* p)
 
   p->E_ = 0.0;
   p->alive_ = false;
-  p->event_ = EVENT_ABSORB;
 }
 
 int sample_nuclide(const Particle* p)
@@ -442,12 +432,7 @@ int sample_element(Particle* p)
 
     // Increment probability to compare to cutoff
     prob += sigma;
-    if (prob > cutoff) {
-      // Save which nuclide particle had collision with for tally purpose
-      p->event_nuclide_ = mat->nuclide_[i];
-
-      return i_element;
-    }
+    if (prob > cutoff) return i_element;
   }
 
   // If we made it here, no element was sampled

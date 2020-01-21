@@ -96,7 +96,7 @@ Mgxs::metadata_from_hdf5(hid_t xs_id, const std::vector<double>& temperature,
   // Determine the available temperatures
   hid_t kT_group = open_group(xs_id, "kTs");
   int num_temps = get_num_datasets(kT_group);
-  char** dset_names = new char*[num_temps];
+  char* dset_names[num_temps];
   for (int i = 0; i < num_temps; i++) {
     dset_names[i] = new char[151];
   }
@@ -111,7 +111,6 @@ Mgxs::metadata_from_hdf5(hid_t xs_id, const std::vector<double>& temperature,
     // Done with dset_names, so delete it
     delete[] dset_names[i];
   }
-  delete[] dset_names;
   std::sort(available_temps.begin(), available_temps.end());
 
   // If only one temperature is available, lets just use nearest temperature
@@ -522,7 +521,7 @@ Mgxs::get_xs(int xstype, int gin, const int* gout, const double* mu,
     break;
   case MG_GET_XS_DECAY_RATE:
     if (dg != nullptr) {
-      val = xs_t->decay_rate(a, *dg);
+      val = xs_t->decay_rate(a, *dg + 1);
     } else {
       val = xs_t->decay_rate(a, 0);
     }

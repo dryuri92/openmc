@@ -16,13 +16,7 @@ namespace openmc {
 class MeshFilter : public Filter
 {
 public:
-  //----------------------------------------------------------------------------
-  // Constructors, destructors
-
   ~MeshFilter() = default;
-
-  //----------------------------------------------------------------------------
-  // Methods
 
   std::string type() const override {return "mesh";}
 
@@ -35,17 +29,11 @@ public:
 
   std::string text_label(int bin) const override;
 
-  //----------------------------------------------------------------------------
-  // Accessors
-
   virtual int32_t mesh() const {return mesh_;}
 
   virtual void set_mesh(int32_t mesh);
 
 protected:
-  //----------------------------------------------------------------------------
-  // Data members
-
   int32_t mesh_;
 };
 

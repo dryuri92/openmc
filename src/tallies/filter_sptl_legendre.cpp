@@ -12,52 +12,23 @@ namespace openmc {
 void
 SpatialLegendreFilter::from_xml(pugi::xml_node node)
 {
-  this->set_order(std::stoi(get_node_value(node, "order")));
+  order_ = std::stoi(get_node_value(node, "order"));
 
   auto axis = get_node_value(node, "axis");
-  switch (axis[0]) {
-  case 'x':
-    this->set_axis(LegendreAxis::x);
-    break;
-  case 'y':
-    this->set_axis(LegendreAxis::y);
-    break;
-  case 'z':
-    this->set_axis(LegendreAxis::z);
-    break;
-  default:
-    throw std::runtime_error{"Axis for SpatialLegendreFilter must be 'x', 'y', or 'z'"};
+  if (axis == "x") {
+    axis_ = LegendreAxis::x;
+  } else if (axis == "y") {
+    axis_ = LegendreAxis::y;
+  } else if (axis == "z") {
+    axis_ = LegendreAxis::z;
+  } else {
+    fatal_error("Unrecognized axis on SpatialLegendreFilter");
   }
 
-  double min = std::stod(get_node_value(node, "min"));
-  double max = std::stod(get_node_value(node, "max"));
-  this->set_minmax(min, max);
-}
+  min_ = std::stod(get_node_value(node, "min"));
+  max_ = std::stod(get_node_value(node, "max"));
 
-void
-SpatialLegendreFilter::set_order(int order)
-{
-  if (order < 0) {
-    throw std::invalid_argument{"Legendre order must be non-negative."};
-  }
-  order_ = order;
   n_bins_ = order_ + 1;
-}
-
-void
-SpatialLegendreFilter::set_axis(LegendreAxis axis)
-{
-  axis_ = axis;
-}
-
-void
-SpatialLegendreFilter::set_minmax(double min, double max)
-{
-  if (max < min) {
-    throw std::invalid_argument{"Maximum value must be greater than minimum value"};
-  }
-  min_ = min;
-  max_ = max;
 }
 
 void
@@ -79,8 +50,8 @@ SpatialLegendreFilter::get_all_bins(const Particle* p, int estimator,
     double x_norm = 2.0*(x - min_) / (max_ - min_) - 1.0;
 
     // Compute and return the Legendre weights.
-    std::vector<double> wgt(order_ + 1);
-    calc_pn_c(order_, x_norm, wgt.data());
+    double wgt[order_ + 1];
+    calc_pn_c(order_, x_norm, wgt);
     for (int i = 0; i < order_ + 1; i++) {
       match.bins_.push_back(i);
       match.weights_.push_back(wgt[i]);
@@ -155,7 +126,7 @@ openmc_spatial_legendre_filter_get_order(int32_t index, int* order)
   if (err) return err;
 
   // Output the order.
-  *order = filt->order();
+  *order = filt->order_;
   return 0;
 }
 
@@ -170,9 +141,9 @@ openmc_spatial_legendre_filter_get_params(int32_t index, int* axis,
   if (err) return err;
 
   // Output the params.
-  *axis = static_cast<int>(filt->axis());
-  *min = filt->min();
-  *max = filt->max();
+  *axis = static_cast<int>(filt->axis_);
+  *min = filt->min_;
+  *max = filt->max_;
   return 0;
 }
 
@@ -186,7 +157,8 @@ openmc_spatial_legendre_filter_set_order(int32_t index, int order)
   if (err) return err;
 
   // Update the filter.
-  filt->set_order(order);
+  filt->order_ = order;
+  filt->n_bins_ = order + 1;
   return 0;
 }
 
@@ -201,8 +173,9 @@ openmc_spatial_legendre_filter_set_params(int32_t index, const int* axis,
   if (err) return err;
 
   // Update the filter.
-  if (axis) filt->set_axis(static_cast<LegendreAxis>(*axis));
-  if (min && max) filt->set_minmax(*min, *max);
+  if (axis) filt->axis_ = static_cast<LegendreAxis>(*axis);
+  if (min) filt->min_ = *min;
+  if (max) filt->max_ = *max;
   return 0;
 }
 

@@ -894,7 +894,10 @@ class Reaction(EqualityMixin):
             Tgroup = group.create_group(T)
             if self.xs[T] is not None:
                 dset = Tgroup.create_dataset('xs', data=self.xs[T].y)
-                threshold_idx = getattr(self.xs[T], '_threshold_idx', 0)
+                if hasattr(self.xs[T], '_threshold_idx'):
+                    threshold_idx = self.xs[T]._threshold_idx + 1
+                else:
+                    threshold_idx = 1
                 dset.attrs['threshold_idx'] = threshold_idx
         for i, p in enumerate(self.products):
             pgroup = group.create_group('product_{}'.format(i))
@@ -936,7 +939,7 @@ class Reaction(EqualityMixin):
                             'at T={} because no corresponding energy grid '
                             'exists.'.format(mt, T))
                     xs = Tgroup['xs'][()]
-                    threshold_idx = Tgroup['xs'].attrs['threshold_idx']
+                    threshold_idx = Tgroup['xs'].attrs['threshold_idx'] - 1
                     tabulated_xs = Tabulated1D(energy[T][threshold_idx:], xs)
                     tabulated_xs._threshold_idx = threshold_idx
                     rx.xs[T] = tabulated_xs

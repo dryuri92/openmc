@@ -14,9 +14,6 @@ namespace openmc {
 class CellFromFilter : public CellFilter
 {
 public:
-  //----------------------------------------------------------------------------
-  // Methods
-
   std::string type() const override {return "cellfrom";}
 
   void get_all_bins(const Particle* p, int estimator, FilterMatch& match)

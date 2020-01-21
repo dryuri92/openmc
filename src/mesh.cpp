@@ -8,11 +8,13 @@
 #ifdef OPENMC_MPI
 #include "mpi.h"
 #endif
+#include "xtensor/xarray.hpp"
 #include "xtensor/xbuilder.hpp"
 #include "xtensor/xeval.hpp"
 #include "xtensor/xmath.hpp"
 #include "xtensor/xsort.hpp"
 #include "xtensor/xtensor.hpp"
+#include "xtensor/xview.hpp"
 
 #include "openmc/capi.h"
 #include "openmc/constants.h"
@@ -31,7 +33,7 @@ namespace openmc {
 
 namespace model {
 
-std::vector<std::unique_ptr<Mesh>> meshes;
+std::vector<std::unique_ptr<RegularMesh>> meshes;
 std::unordered_map<int32_t, int32_t> mesh_map;
 
 } // namespace model
@@ -65,28 +67,55 @@ inline bool check_intersection_point(double x1, double x0, double y1,
 //==============================================================================
 // Mesh implementation
 //==============================================================================
+RegularMesh::RegularMesh(){
 
-Mesh::Mesh(pugi::xml_node node)
-{
-  // Copy mesh id
-  if (check_for_node(node, "id")) {
-    id_ = std::stoi(get_node_value(node, "id"));
-
-    // Check to make sure 'id' hasn't been used
-    if (model::mesh_map.find(id_) != model::mesh_map.end()) {
-      fatal_error("Two or more meshes use the same unique ID: " +
-        std::to_string(id_));
-    }
-  }
 }
+
+RegularMesh::RegularMesh(pugi::xml_node node)
+
+{
+	// Copy mesh id
+	  if (check_for_node(node, "id")) {
+	    id_ = std::stoi(get_node_value(node, "id"));
+        volume_frac_=0.0;
+        n_dimension_ = 0;
+	    // Check to make sure 'id' hasn't been used
+	    if (model::mesh_map.find(id_) != model::mesh_map.end()) {
+	      fatal_error("Two or more meshes use the same unique ID: " +
+	        std::to_string(id_));
+	    }
+	  }
+
+}
+
+//==============================================================================
 
 //==============================================================================
 // RegularMesh implementation
 //==============================================================================
 
-RegularMesh::RegularMesh(pugi::xml_node node)
-  : Mesh {node}
+RectMesh::RectMesh()
+: RegularMesh {}
 {
+
+}
+RectMesh::RectMesh(pugi::xml_node node)
+: RegularMesh {node}
+{
+
+
+  type_ = MeshType::rect;
+  // Read mesh type
+  if (check_for_node(node, "type")) {
+    auto temp = get_node_value(node, "type", true, true);
+    if (temp == "regular") {
+      // TODO: move elsewhere
+    	type_ = MeshType::rect;
+    } else {
+      fatal_error("Invalid mesh type: " + temp);
+    }
+  }
+
   // Determine number of dimensions for mesh
   if (check_for_node(node, "dimension")) {
     shape_ = get_node_xarray<int>(node, "dimension");
@@ -166,7 +195,7 @@ RegularMesh::RegularMesh(pugi::xml_node node)
   }
 }
 
-int RegularMesh::get_bin(Position r) const
+int RectMesh::get_bin(Position r) const
 {
   // Loop over the dimensions of the mesh
   for (int i = 0; i < n_dimension_; ++i) {
@@ -179,30 +208,30 @@ int RegularMesh::get_bin(Position r) const
   }
 
   // Determine indices
-  std::vector<int> ijk(n_dimension_);
+  int ijk[n_dimension_];
   bool in_mesh;
-  get_indices(r, ijk.data(), &in_mesh);
+  get_indices(r, ijk, &in_mesh);
   if (!in_mesh) return -1;
 
   // Convert indices to bin
-  return get_bin_from_indices(ijk.data());
+  return get_bin_from_indices(ijk);
 }
 
-int RegularMesh::get_bin_from_indices(const int* ijk) const
+int RectMesh::get_bin_from_indices(const int* ijk) const
 {
   switch (n_dimension_) {
-  case 1:
-    return ijk[0] - 1;
-  case 2:
-    return (ijk[1] - 1)*shape_[0] + ijk[0] - 1;
-  case 3:
-    return ((ijk[2] - 1)*shape_[1] + (ijk[1] - 1))*shape_[0] + ijk[0] - 1;
-  default:
-    throw std::runtime_error{"Invalid number of mesh dimensions"};
+    case 1:
+      return ijk[0] - 1;
+    case 2:
+      return (ijk[1] - 1)*shape_[0] + ijk[0] - 1;
+    case 3:
+      return ((ijk[2] - 1)*shape_[1] + (ijk[1] - 1))*shape_[0] + ijk[0] - 1;
+    default:
+      throw std::runtime_error{"Invalid number of mesh dimensions"};
   }
 }
 
-void RegularMesh::get_indices(Position r, int* ijk, bool* in_mesh) const
+void RectMesh::get_indices(Position r, int* ijk, bool* in_mesh) const
 {
   // Find particle in mesh
   *in_mesh = true;
@@ -214,7 +243,7 @@ void RegularMesh::get_indices(Position r, int* ijk, bool* in_mesh) const
   }
 }
 
-void RegularMesh::get_indices_from_bin(int bin, int* ijk) const
+void RectMesh::get_indices_from_bin(int bin, int* ijk) const
 {
   if (n_dimension_ == 1) {
     ijk[0] = bin + 1;
@@ -228,84 +257,45 @@ void RegularMesh::get_indices_from_bin(int bin, int* ijk) const
   }
 }
 
-int RegularMesh::n_bins() const
-{
-  int n_bins = 1;
-  for (auto dim : shape_) n_bins *= dim;
-  return n_bins;
-}
-
-int RegularMesh::n_surface_bins() const
-{
-  return 4 * n_dimension_ * n_bins();
-}
-
-bool RegularMesh::intersects(Position& r0, Position r1, int* ijk) const
+bool RectMesh::intersects(Position r0, Position r1) const
 {
   switch(n_dimension_) {
-  case 1:
-    return intersects_1d(r0, r1, ijk);
-  case 2:
-    return intersects_2d(r0, r1, ijk);
-  case 3:
-    return intersects_3d(r0, r1, ijk);
-  default:
-    throw std::runtime_error{"Invalid number of mesh dimensions."};
+    case 1:
+      return intersects_1d(r0, r1);
+    case 2:
+      return intersects_2d(r0, r1);
+    case 3:
+      return intersects_3d(r0, r1);
+    default:
+      throw std::runtime_error{"Invalid number of mesh dimensions."};
   }
 }
 
-bool RegularMesh::intersects_1d(Position& r0, Position r1, int* ijk) const
+bool RectMesh::intersects_1d(Position r0, Position r1) const
 {
-  // Copy coordinates of starting point
-  double x0 = r0.x;
-  double y0 = r0.y;
-  double z0 = r0.z;
-
-  // Copy coordinates of ending point
-  double x1 = r1.x;
-  double y1 = r1.y;
-  double z1 = r1.z;
-
   // Copy coordinates of mesh lower_left and upper_right
-  double xm0 = lower_left_[0];
-  double xm1 = upper_right_[0];
+  double left = lower_left_[0];
+  double right = upper_right_[0];
 
-  double min_dist = INFTY;
-
-  // Check if line intersects left surface -- calculate the intersection point
-  // (y,z)
-  if ((x0 < xm0 && x1 > xm0) || (x0 > xm0 && x1 < xm0)) {
-    double yi = y0 + (xm0 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm0 - x0) * (z1 - z0) / (x1 - x0);
-    if (check_intersection_point(xm0, x0, yi, yi, zi, zi, r0, min_dist)) {
-      ijk[0] = 1;
-    }
+  // Check if line intersects either left or right surface
+  if (r0.x < left) {
+    return r1.x > left;
+  } else if (r0.x < right) {
+    return r1.x < left || r1.x > right;
+  } else {
+    return r1.x < right;
   }
-
-  // Check if line intersects right surface -- calculate the intersection point
-  // (y,z)
-  if ((x0 < xm1 && x1 > xm1) || (x0 > xm1 && x1 < xm1)) {
-    double yi = y0 + (xm1 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm1 - x0) * (z1 - z0) / (x1 - x0);
-    if (check_intersection_point(xm1, x0, yi, yi, zi, zi, r0, min_dist)) {
-      ijk[0] = shape_[0];
-    }
-  }
-
-  return min_dist < INFTY;
 }
 
-bool RegularMesh::intersects_2d(Position& r0, Position r1, int* ijk) const
+bool RectMesh::intersects_2d(Position r0, Position r1) const
 {
   // Copy coordinates of starting point
   double x0 = r0.x;
   double y0 = r0.y;
-  double z0 = r0.z;
 
   // Copy coordinates of ending point
   double x1 = r1.x;
   double y1 = r1.y;
-  double z1 = r1.z;
 
   // Copy coordinates of mesh lower_left
   double xm0 = lower_left_[0];
@@ -315,64 +305,44 @@ bool RegularMesh::intersects_2d(Position& r0, Position r1, int* ijk) const
   double xm1 = upper_right_[0];
   double ym1 = upper_right_[1];
 
-  double min_dist = INFTY;
-
-  // Check if line intersects left surface -- calculate the intersection point
-  // (y,z)
+  // Check if line intersects left surface -- calculate the intersection point y
   if ((x0 < xm0 && x1 > xm0) || (x0 > xm0 && x1 < xm0)) {
     double yi = y0 + (xm0 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm0 - x0) * (z1 - z0) / (x1 - x0);
     if (yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xm0, x0, yi, y0, zi, zi, r0, min_dist)) {
-        ijk[0] = 1;
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-      }
+      return true;
     }
   }
 
   // Check if line intersects back surface -- calculate the intersection point
-  // (x,z)
+  // x
   if ((y0 < ym0 && y1 > ym0) || (y0 > ym0 && y1 < ym0)) {
     double xi = x0 + (ym0 - y0) * (x1 - x0) / (y1 - y0);
-    double zi = z0 + (ym0 - y0) * (z1 - z0) / (y1 - y0);
     if (xi >= xm0 && xi < xm1) {
-      if (check_intersection_point(xi, x0, ym0, y0, zi, zi, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = 1;
-      }
+      return true;
     }
   }
 
-  // Check if line intersects right surface -- calculate the intersection point
-  // (y,z)
+  // Check if line intersects right surface -- calculate the intersection
+  // point y
   if ((x0 < xm1 && x1 > xm1) || (x0 > xm1 && x1 < xm1)) {
     double yi = y0 + (xm1 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm1 - x0) * (z1 - z0) / (x1 - x0);
     if (yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xm1, x0, yi, y0, zi, zi, r0, min_dist)) {
-        ijk[0] = shape_[0];
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-      }
+      return true;
     }
   }
 
   // Check if line intersects front surface -- calculate the intersection point
-  // (x,z)
+  // x
   if ((y0 < ym1 && y1 > ym1) || (y0 > ym1 && y1 < ym1)) {
     double xi = x0 + (ym1 - y0) * (x1 - x0) / (y1 - y0);
-    double zi = z0 + (ym1 - y0) * (z1 - z0) / (y1 - y0);
     if (xi >= xm0 && xi < xm1) {
-      if (check_intersection_point(xi, x0, ym1, y0, zi, zi, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = shape_[1];
-      }
+      return true;
     }
   }
-
-  return min_dist < INFTY;
+  return false;
 }
 
-bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
+bool RectMesh::intersects_3d(Position r0, Position r1) const
 {
   // Copy coordinates of starting point
   double x0 = r0.x;
@@ -394,19 +364,13 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
   double ym1 = upper_right_[1];
   double zm1 = upper_right_[2];
 
-  double min_dist = INFTY;
-
   // Check if line intersects left surface -- calculate the intersection point
   // (y,z)
   if ((x0 < xm0 && x1 > xm0) || (x0 > xm0 && x1 < xm0)) {
     double yi = y0 + (xm0 - x0) * (y1 - y0) / (x1 - x0);
     double zi = z0 + (xm0 - x0) * (z1 - z0) / (x1 - x0);
     if (yi >= ym0 && yi < ym1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xm0, x0, yi, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = 1;
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-        ijk[2] = std::ceil((zi - lower_left_[2]) / width_[2]);
-      }
+      return true;
     }
   }
 
@@ -416,11 +380,7 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
     double xi = x0 + (ym0 - y0) * (x1 - x0) / (y1 - y0);
     double zi = z0 + (ym0 - y0) * (z1 - z0) / (y1 - y0);
     if (xi >= xm0 && xi < xm1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xi, x0, ym0, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = 1;
-        ijk[2] = std::ceil((zi - lower_left_[2]) / width_[2]);
-      }
+      return true;
     }
   }
 
@@ -430,11 +390,7 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
     double xi = x0 + (zm0 - z0) * (x1 - x0) / (z1 - z0);
     double yi = y0 + (zm0 - z0) * (y1 - y0) / (z1 - z0);
     if (xi >= xm0 && xi < xm1 && yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xi, x0, yi, y0, zm0, z0, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-        ijk[2] = 1;
-      }
+      return true;
     }
   }
 
@@ -444,11 +400,7 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
     double yi = y0 + (xm1 - x0) * (y1 - y0) / (x1 - x0);
     double zi = z0 + (xm1 - x0) * (z1 - z0) / (x1 - x0);
     if (yi >= ym0 && yi < ym1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xm1, x0, yi, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = shape_[0];
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-        ijk[2] = std::ceil((zi - lower_left_[2]) / width_[2]);
-      }
+      return true;
     }
   }
 
@@ -458,11 +410,7 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
     double xi = x0 + (ym1 - y0) * (x1 - x0) / (y1 - y0);
     double zi = z0 + (ym1 - y0) * (z1 - z0) / (y1 - y0);
     if (xi >= xm0 && xi < xm1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xi, x0, ym1, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = shape_[1];
-        ijk[2] = std::ceil((zi - lower_left_[2]) / width_[2]);
-      }
+      return true;
     }
   }
 
@@ -472,72 +420,133 @@ bool RegularMesh::intersects_3d(Position& r0, Position r1, int* ijk) const
     double xi = x0 + (zm1 - z0) * (x1 - x0) / (z1 - z0);
     double yi = y0 + (zm1 - z0) * (y1 - y0) / (z1 - z0);
     if (xi >= xm0 && xi < xm1 && yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xi, x0, yi, y0, zm1, z0, r0, min_dist)) {
-        ijk[0] = std::ceil((xi - lower_left_[0]) / width_[0]);
-        ijk[1] = std::ceil((yi - lower_left_[1]) / width_[1]);
-        ijk[2] = shape_[2];
-      }
+      return true;
     }
   }
-
-  return min_dist < INFTY;
+  return false;
 }
 
-void RegularMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
+void RectMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
                                std::vector<double>& lengths) const
 {
-  // ========================================================================
-  // Determine where the track intersects the mesh and if it intersects at all.
+  constexpr int MAX_SEARCH_ITER = 100;
 
-  // Copy the starting and ending coordinates of the particle.
+  // ========================================================================
+  // Determine if the track intersects the tally mesh.
+
+  // Copy the starting and ending coordinates of the particle.  Offset these
+  // just a bit for the purposes of determining if there was an intersection
+  // in case the mesh surfaces coincide with lattice/geometric surfaces which
+  // might produce finite-precision errors.
   Position last_r {p->r_last_};
   Position r {p->r()};
   Direction u {p->u()};
 
-  // Compute the length of the entire track.
-  double total_distance = (r - last_r).norm();
-
-  // While determining if this track intersects the mesh, offset the starting
-  // and ending coords by a bit.  This avoid finite-precision errors that can
-  // occur when the mesh surfaces coincide with lattice or geometric surfaces.
   Position r0 = last_r + TINY_BIT*u;
   Position r1 = r - TINY_BIT*u;
 
-  // Determine the mesh indices for the starting and ending coords.
+  // Determine indices for starting and ending location.
   int n = n_dimension_;
-  std::vector<int> ijk0(n), ijk1(n);
+  int ijk0[n], ijk1[n];
   bool start_in_mesh;
-  get_indices(r0, ijk0.data(), &start_in_mesh);
+  get_indices(r0, ijk0, &start_in_mesh);
   bool end_in_mesh;
-  get_indices(r1, ijk1.data(), &end_in_mesh);
+  get_indices(r1, ijk1, &end_in_mesh);
 
-  // Reset coordinates and check for a mesh intersection if necessary.
-  if (start_in_mesh) {
-    // The initial coords lie in the mesh, use those coords for tallying.
-    r0 = last_r;
-  } else {
-    // The initial coords do not lie in the mesh.  Check to see if the particle
-    // eventually intersects the mesh and compute the relevant coords and
-    // indices.
-    if (!intersects(r0, r1, ijk0.data())) return;
+  // Check if the track intersects any part of the mesh.
+  if (!start_in_mesh && !end_in_mesh) {
+    if (!intersects(r0, r1)) return;
   }
-  r1 = r;
 
   // ========================================================================
-  // Find which mesh cells are traversed and the length of each traversal.
+  // Figure out which mesh cell to tally.
+
+  // Copy the un-modified coordinates the particle direction.
+  r0 = last_r;
+  r1 = r;
+
+  // Compute the length of the entire track.
+  double total_distance = (r1 - r0).norm();
+
+  // We are looking for the first valid mesh bin.  Check to see if the
+  // particle starts inside the mesh.
+  if (!start_in_mesh) {
+    double d[n];
+
+    // The particle does not start in the mesh.  Note that we nudged the
+    // start and end coordinates by a TINY_BIT each so we will have
+    // difficulty resolving tracks that are less than 2*TINY_BIT in length.
+    // If the track is that short, it is also insignificant so we can
+    // safely ignore it in the tallies.
+    if (total_distance < 2*TINY_BIT) return;
+
+    // The particle does not start in the mesh so keep iterating the ijk0
+    // indices to cross the nearest mesh surface until we've found a valid
+    // bin.  MAX_SEARCH_ITER prevents an infinite loop.
+    int search_iter = 0;
+    int j;
+    bool in_mesh = true;
+    for (int i = 0; i < n; ++i) {
+      if (ijk0[i] < 1 || ijk0[i] > shape_[i]) {
+       in_mesh = false;
+       break;
+      }
+    }
+    while (!in_mesh) {
+      if (search_iter == MAX_SEARCH_ITER) {
+        warning("Failed to find a mesh intersection on a tally mesh filter.");
+        return;
+      }
+
+      for (j = 0; j < n; ++j) {
+        if (std::fabs(u[j]) < FP_PRECISION) {
+          d[j] = INFTY;
+        } else if (u[j] > 0.0) {
+          double xyz_cross = lower_left_[j] + ijk0[j] * width_[j];
+          d[j] = (xyz_cross - r0[j]) / u[j];
+        } else {
+          double xyz_cross = lower_left_[j] + (ijk0[j] - 1) * width_[j];
+          d[j] = (xyz_cross - r0[j]) / u[j];
+        }
+      }
+
+      j = std::min_element(d, d+n) - d;// Very tricky method to get an index of minimal element array
+      if (u[j] > 0.0) {
+        ++ijk0[j];
+      } else {
+        --ijk0[j];
+      }
+
+      ++search_iter;
+      in_mesh = true;
+      for (int i = 0; i < n; ++i) {
+        if (ijk0[i] < 1 || ijk0[i] > shape_[i]) {
+         in_mesh = false;
+         break;
+        }
+      }
+    }
+
+    // Advance position
+    r0 += d[j] * u;
+  }
 
   while (true) {
-    if (ijk0 == ijk1) {
+    // ========================================================================
+    // Compute the length of the track segment in the each mesh cell and return
+
+    if (std::equal(ijk0, ijk0+n, ijk1)) {
       // The track ends in this cell.  Use the particle end location rather
-      // than the mesh surface and stop iterating.
+      // than the mesh surface.
       double distance = (r1 - r0).norm();
-      bins.push_back(get_bin_from_indices(ijk0.data()));
+      bins.push_back(get_bin_from_indices(ijk0));
       lengths.push_back(distance / total_distance);
       break;
     }
 
-    // The track exits this cell.  Determine the distance to each mesh surface.
-    std::vector<double> d(n);
+    // The track exits this cell.  Determine the distance to the closest mesh
+    // surface.
+    double d[n];
     for (int k = 0; k < n; ++k) {
       if (std::fabs(u[k]) < FP_PRECISION) {
         d[k] = INFTY;
@@ -550,13 +559,14 @@ void RegularMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
       }
     }
 
-    // Pick the closest mesh surface and append this traversal to the output.
-    auto j = std::min_element(d.begin(), d.end()) - d.begin();
+    // Assign the next tally bin and the score.
+    auto j = std::min_element(d, d+n) - d;
     double distance = d[j];
-    bins.push_back(get_bin_from_indices(ijk0.data()));
+    bins.push_back(get_bin_from_indices(ijk0));
     lengths.push_back(distance / total_distance);
 
-    // Translate to the oncoming mesh surface.
+    // Translate the starting coordintes by the distance to the oncoming mesh
+    // surface.
     r0 += distance * u;
 
     // Increment the indices into the next mesh cell.
@@ -579,8 +589,7 @@ void RegularMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
   }
 }
 
-void RegularMesh::surface_bins_crossed(const Particle* p,
-                                       std::vector<int>& bins) const
+void RectMesh::surface_bins_crossed(const Particle* p, std::vector<int>& bins) const
 {
   // ========================================================================
   // Determine if the track intersects the tally mesh.
@@ -592,21 +601,19 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
 
   // Determine indices for starting and ending location.
   int n = n_dimension_;
-  std::vector<int> ijk0(n), ijk1(n);
+  int ijk0[n], ijk1[n];
   bool start_in_mesh;
-  get_indices(r0, ijk0.data(), &start_in_mesh);
+  get_indices(r0, ijk0, &start_in_mesh);
   bool end_in_mesh;
-  get_indices(r1, ijk1.data(), &end_in_mesh);
+  get_indices(r1, ijk1, &end_in_mesh);
 
   // Check if the track intersects any part of the mesh.
-  if (!start_in_mesh) {
-    Position r0_copy = r0;
-    std::vector<int> ijk0_copy(ijk0);
-    if (!intersects(r0_copy, r1, ijk0_copy.data())) return;
+  if (!start_in_mesh && !end_in_mesh) {
+    if (!intersects(r0, r1)) return;
   }
 
   // ========================================================================
-  // Find which mesh surfaces are crossed.
+  // Figure out which mesh cell to tally.
 
   // Calculate number of surface crossings
   int n_cross = 0;
@@ -633,7 +640,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
     double distance = INFTY;
     for (int i = 0; i < n; ++i) {
       if (u[i] == 0) {
-        d[i] = INFTY;
+        d[i] = INFINITY;
       } else {
         d[i] = (xyz_cross[i] - r0[i])/u[i];
       }
@@ -660,7 +667,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
           // Outward current on i max surface
           if (in_mesh) {
             int i_surf = 4*i + 3;
-            int i_mesh = get_bin_from_indices(ijk0.data());
+            int i_mesh = get_bin_from_indices(ijk0);
             int i_bin = 4*n*i_mesh + i_surf - 1;
 
             bins.push_back(i_bin);
@@ -681,7 +688,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
           // i min surface
           if (in_mesh) {
             int i_surf = 4*i + 2;
-            int i_mesh = get_bin_from_indices(ijk0.data());
+            int i_mesh = get_bin_from_indices(ijk0);
             int i_bin = 4*n*i_mesh + i_surf - 1;
 
             bins.push_back(i_bin);
@@ -693,7 +700,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
           // Outward current on i min surface
           if (in_mesh) {
             int i_surf = 4*i + 1;
-            int i_mesh = get_bin_from_indices(ijk0.data());
+            int i_mesh = get_bin_from_indices(ijk0);
             int i_bin = 4*n*i_mesh + i_surf - 1;
 
             bins.push_back(i_bin);
@@ -714,7 +721,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
           // i max surface
           if (in_mesh) {
             int i_surf = 4*i + 4;
-            int i_mesh = get_bin_from_indices(ijk0.data());
+            int i_mesh = get_bin_from_indices(ijk0);
             int i_bin = 4*n*i_mesh + i_surf - 1;
 
             bins.push_back(i_bin);
@@ -728,43 +735,7 @@ void RegularMesh::surface_bins_crossed(const Particle* p,
   }
 }
 
-std::pair<std::vector<double>, std::vector<double>>
-RegularMesh::plot(Position plot_ll, Position plot_ur) const
-{
-  // Figure out which axes lie in the plane of the plot.
-  std::array<int, 2> axes {-1, -1};
-  if (plot_ur.z == plot_ll.z) {
-    axes[0] = 0;
-    if (n_dimension_ > 1) axes[1] = 1;
-  } else if (plot_ur.y == plot_ll.y) {
-    axes[0] = 0;
-    if (n_dimension_ > 2) axes[1] = 2;
-  } else if (plot_ur.x == plot_ll.x) {
-    if (n_dimension_ > 1) axes[0] = 1;
-    if (n_dimension_ > 2) axes[1] = 2;
-  } else {
-    fatal_error("Can only plot mesh lines on an axis-aligned plot");
-  }
-
-  // Get the coordinates of the mesh lines along both of the axes.
-  std::array<std::vector<double>, 2> axis_lines;
-  for (int i_ax = 0; i_ax < 2; ++i_ax) {
-    int axis = axes[i_ax];
-    if (axis == -1) continue;
-    auto& lines {axis_lines[i_ax]};
-
-    double coord = lower_left_[axis];
-    for (int i = 0; i < shape_[axis] + 1; ++i) {
-      if (coord >= plot_ll[axis] && coord <= plot_ur[axis])
-        lines.push_back(coord);
-      coord += width_[axis];
-    }
-  }
-
-  return {axis_lines[0], axis_lines[1]};
-}
-
-void RegularMesh::to_hdf5(hid_t group) const
+void RectMesh::to_hdf5(hid_t group) const
 {
   hid_t mesh_group = create_group(group, "mesh " + std::to_string(id_));
 
@@ -777,8 +748,8 @@ void RegularMesh::to_hdf5(hid_t group) const
   close_group(mesh_group);
 }
 
-xt::xtensor<double, 1>
-RegularMesh::count_sites(const std::vector<Particle::Bank>& bank,
+xt::xarray<double>
+RectMesh::count_sites(const std::vector<Particle::Bank>& bank,
   bool* outside) const
 {
   // Determine shape of array for counts
@@ -827,530 +798,1006 @@ RegularMesh::count_sites(const std::vector<Particle::Bank>& bank,
 
   return counts;
 }
-
+//
 //==============================================================================
-// RectilinearMesh implementation
+//! Tessellation of n-dimensional Euclidean space by hexagonal prism
 //==============================================================================
-
-RectilinearMesh::RectilinearMesh(pugi::xml_node node)
-  : Mesh {node}
+HexMesh::HexMesh(pugi::xml_node node)
+: RegularMesh {node}
 {
-  n_dimension_ = 3;
 
-  grid_.resize(3);
-  grid_[0] = get_node_array<double>(node, "x_grid");
-  grid_[1] = get_node_array<double>(node, "y_grid");
-  grid_[2] = get_node_array<double>(node, "z_grid");
+	write_message("Reading info hex!!!!!!!");
+	type_ = MeshType::hex;
+  // Read mesh type
+  if (check_for_node(node, "type")) {
+    auto temp = get_node_value(node, "type", true, true);
 
-  shape_ = {static_cast<int>(grid_[0].size()) - 1,
-            static_cast<int>(grid_[1].size()) - 1,
-            static_cast<int>(grid_[2].size()) - 1};
-
-  for (const auto& g : grid_) {
-    if (g.size() < 2) fatal_error("x-, y-, and z- grids for rectilinear meshes "
-      "must each have at least 2 points");
-    for (int i = 1; i < g.size(); ++i) {
-      if (g[i] <= g[i-1]) fatal_error("Values in for x-, y-, and z- grids for "
-        "rectilinear meshes must be sorted and unique.");
-    }
   }
 
-  lower_left_ = {grid_[0].front(), grid_[1].front(), grid_[2].front()};
-  upper_right_ = {grid_[0].back(), grid_[1].back(), grid_[2].back()};
+  // Read the number of lattice cells in each dimension.
+   n_rings_ = std::stoi(get_node_value(node, "n_rings"));
+   if (check_for_node(node, "n_axial")) {
+   n_axial_ = std::stoi(get_node_value(node, "n_axial"));
+   }
+   //Shapes of a hexagonal mesh
+
+  // Determine number of dimensions for mesh
+    if (n_axial_>1){
+    	n_dimension_ = 3;
+    }
+
+
+      shape_ = xt::ones<int>({3});
+      shape_(0) = 2*n_rings_- 1;//3*(n_rings_- 1)*n_rings_ + 1;
+      shape_(1) =  2*n_rings_- 1;
+      shape_(2) = n_axial_;
+
+    int n = n_dimension_;
+    if (n != 1 && n != 2 && n != 3) {
+      fatal_error("Mesh must be one, two, or three dimensions.");
+    }
+
+    // Check that dimensions are all greater than zero
+    if (xt::any(shape_ <= 0)) {
+      fatal_error("All entries on the <dimension> element for a tally "
+        "mesh must be positive.");
+    }
+
+
+  // Check for lower-left coordinates
+  if (check_for_node(node, "center")) {
+    // Read mesh lower-left corner location
+	  xt::xarray<double> loccenter { get_node_xarray<double>(node, "center")};
+     center_.x = loccenter(0);
+     center_.y = loccenter(1);
+     if (n_dimension_ > 2) {
+    	 center_.z = loccenter(2);
+     }
+  } else {
+    fatal_error("Must specify <center> on a mesh.");
+  }
+
+  if (check_for_node(node, "width")) {
+    // Make sure  width were specified
+
+    width_ = get_node_xarray<double>(node, "width");
+
+    // Check to ensure width has same dimensions
+    auto n = width_.size();
+
+  }
+
+  if (n_axial_ > 1) {
+	  if (check_for_node(node, "discretez")) {
+		  discretez_ = get_node_xarray<double>(node, "discretez");
+	  }
+	  else {
+	      fatal_error("Must specify discretez on a hexagonal mesh.");}
+
+
+  int iz {0};
+  heightz_ = xt::zeros<double>({discretez_.size() + 1});
+  lower_left_ = xt::zeros<double>({n_dimension_});
+  upper_right_ = xt::zeros<double>({n_dimension_});
+  heightz_(0) = center_.z;
+  for (auto it = discretez_.begin();it!=discretez_.end();it++ )
+  {
+	  heightz_(iz+1) = heightz_(iz) + *it;
+	  iz++;
+  }
+  std :: cout << "CHECK AXIAL SIZE";
+  for (auto it = heightz_.begin();it!=heightz_.end();it++ )
+    {
+  	  std::cout << *it << std :: endl;
+
+    }
+
+
+  }
+
+  // Check for negative widths
+   if (xt::any(width_ < 0.0)) {
+     fatal_error("Cannot have a negative <width> on a tally mesh.");
+   }
+  if (shape_.dimension() > 0) {
+
+
+    // Set volume fraction
+    volume_frac_ = 1.0/xt::prod(shape_)();
+  }
+  _hpp = 2*(n_rings_ + (n_rings_ - 1)/2.0)*width_(0)/sqrt(3.0);
+
+  float sqt3 {sqrt(3.0)/2.0};
+  lines = xt::xarray<Position>(_lineshapes);
+  std::cout << "WRITE-LINES " <<n_rings_ << " " << width_(0) ;
+  // right - up boundary
+  lines(0,0).x = _hpp/(sqt3*2.0);
+  lines(0,0).y = _hpp/2.0;
+  lines(0,1).x = _hpp/sqt3;
+  lines(0,1).y = 0.0;
+  // right - down boundary
+  lines(1,0).x = _hpp/sqt3;
+  lines(1,0).y = 0.0;
+  lines(1,1).x = _hpp/(sqt3*2.0);
+  lines(1,1).y = -_hpp/2.;
+  // down boundary
+  lines(2,0).x = _hpp/(sqt3*2.0);
+  lines(2,0).y = -_hpp/2.;
+  lines(2,1).x = -_hpp/(sqt3*2.0);
+  lines(2,1).y = -_hpp/2.;
+  // left - down boundary
+  lines(3,0).x = -_hpp/(sqt3*2.0);
+  lines(3,0).y = -_hpp/2.;
+  lines(3,1).x = -_hpp/sqt3;
+  lines(3,1).y = 0.0;
+  // left - up boundary
+  lines(4,0).x = -_hpp/sqt3;
+  lines(4,0).y = 0.0;
+  lines(4,1).x = -_hpp/(sqt3*2.0);
+  lines(4,1).y = _hpp/2.0;
+  // up  boundary
+  lines(5,0).x = -_hpp/(sqt3*2.0);
+  lines(5,0).y = _hpp/2.0;
+  lines(5,1).x = _hpp/(sqt3*2.0);
+  lines(5,1).y = _hpp/2.0;
+  //std::cout << "Y:" << lines(5,1).y << " X: " << lines(4,0).x;
 }
-
-void RectilinearMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
-                                   std::vector<double>& lengths) const
+//=================================================================
+ void HexMesh::bins_crossed(const Particle* p, std::vector<int>& bins,
+                               std::vector<double>& lengths) const
 {
-  // ========================================================================
-  // Determine where the track intersects the mesh and if it intersects at all.
+  constexpr int MAX_SEARCH_ITER = 100;
 
-  // Copy the starting and ending coordinates of the particle.
+  // ========================================================================
+  // Determine if the track intersects the tally mesh.
+
+  // Copy the starting and ending coordinates of the particle.  Offset these
+  // just a bit for the purposes of determining if there was an intersection
+  // in case the mesh surfaces coincide with lattice/geometric surfaces which
+  // might produce finite-precision errors.
+  int iter {0};
   Position last_r {p->r_last_};
   Position r {p->r()};
   Direction u {p->u()};
 
-  // Compute the length of the entire track.
-  double total_distance = (r - last_r).norm();
-
-  // While determining if this track intersects the mesh, offset the starting
-  // and ending coords by a bit.  This avoid finite-precision errors that can
-  // occur when the mesh surfaces coincide with lattice or geometric surfaces.
   Position r0 = last_r + TINY_BIT*u;
   Position r1 = r - TINY_BIT*u;
 
-  // Determine the mesh indices for the starting and ending coords.
-  int ijk0[3], ijk1[3];
+  // Determine indices for starting and ending location.
+  int n = n_dimension_;
+  int ijk0[n], ijk1[n];
   bool start_in_mesh;
-  get_indices(r0, ijk0, &start_in_mesh);
+  bool finallycross;
   bool end_in_mesh;
-  get_indices(r1, ijk1, &end_in_mesh);
+  crossing(r0,r1,&ijk0[0],&ijk1[0],finallycross,start_in_mesh,end_in_mesh);
 
-  // Reset coordinates and check for a mesh intersection if necessary.
-  if (start_in_mesh) {
-    // The initial coords lie in the mesh, use those coords for tallying.
-    r0 = last_r;
-  } else {
-    // The initial coords do not lie in the mesh.  Check to see if the particle
-    // eventually intersects the mesh and compute the relevant coords and
-    // indices.
-    if (!intersects(r0, r1, ijk0)) return;
+  double this_d;
+  // Check if the track intersects any part of the mesh.
+  if (!start_in_mesh && !end_in_mesh) {
+    if (!finallycross) return;
   }
-  r1 = r;
 
   // ========================================================================
-  // Find which mesh cells are traversed and the length of each traversal.
+  // Figure out which mesh cell to tally.
 
-  while (true) {
-    if (std::equal(ijk0, ijk0+3, ijk1)) {
+  // Copy the un-modified coordinates the particle direction.
+  r0 = last_r;
+  r1 = r;
+
+  // Compute the length of the entire track.
+  double total_distance = (r1 - r0).norm();
+  // The particle does not start in the mesh.  Note that we nudged the
+     // start and end coordinates by a TINY_BIT each so we will have
+     // difficulty resolving tracks that are less than 2*TINY_BIT in length.
+     // If the track is that short, it is also insignificant so we can
+     // safely ignore it in the tallies.
+   if (total_distance < 2*TINY_BIT) return;
+  //
+  // Compute the direction on the hexagonal basis.
+   double beta_dir = u.x*0.5  + u.y * std::sqrt(3.0) / 2.0;
+   double gamma_dir = u.x*0.5  - u.y * std::sqrt(3.0) / 2.0;
+
+    // Note that hexagonal lattice distance calculations are performed
+    // using the particle's coordinates relative to the neighbor lattice
+    // cells, not relative to the particle's current cell.  This is done
+    // because there is significant disagreement between neighboring cells
+    // on where the lattice boundary is due to finite precision issues.
+
+   while (true) {
+    // ========================================================================
+    // Compute the length of the track segment in the each mesh cell and return
+
+	iter++;
+    if (std::equal(ijk0, ijk0+n, ijk1)) {
       // The track ends in this cell.  Use the particle end location rather
-      // than the mesh surface and stop iterating.
+      // than the mesh surface.
+     if (end_in_mesh){
+
       double distance = (r1 - r0).norm();
       bins.push_back(get_bin_from_indices(ijk0));
       lengths.push_back(distance / total_distance);
+
+     }
       break;
     }
 
-    // The track exits this cell.  Determine the distance to each mesh surface.
-    double d[3];
-    for (int k = 0; k < 3; ++k) {
-      if (std::fabs(u[k]) < FP_PRECISION) {
-        d[k] = INFTY;
-      } else if (u[k] > 0) {
-        double xyz_cross = grid_[k][ijk0[k]];
-        d[k] = (xyz_cross - r0[k]) / u[k];
-      } else {
-        double xyz_cross = grid_[k][ijk0[k] - 1];
-        d[k] = (xyz_cross - r0[k]) / u[k];
-      }
-    }
-
-    // Pick the closest mesh surface and append this traversal to the output.
-    auto j = std::min_element(d, d+3) - d;
-    double distance = d[j];
-    bins.push_back(get_bin_from_indices(ijk0));
-    lengths.push_back(distance / total_distance);
-
-    // Translate to the oncoming mesh surface.
-    r0 += distance * u;
-
-    // Increment the indices into the next mesh cell.
-    if (u[j] > 0.0) {
-      ++ijk0[j];
-    } else {
-      --ijk0[j];
-    }
-
-    // If the next indices are invalid, then the track has left the mesh and
-    // we are done.
-    bool in_mesh = true;
-    for (int i = 0; i < 3; ++i) {
-      if (ijk0[i] < 1 || ijk0[i] > shape_[i]) {
-        in_mesh = false;
-        break;
-      }
-    }
-    if (!in_mesh) break;
-  }
-}
-
-void RectilinearMesh::surface_bins_crossed(const Particle* p,
-                                           std::vector<int>& bins) const
-{
-  // ========================================================================
-  // Determine if the track intersects the tally mesh.
-
-  // Copy the starting and ending coordinates of the particle.
-  Position r0 {p->r_last_current_};
-  Position r1 {p->r()};
-  Direction u {p->u()};
-
-  // Determine indices for starting and ending location.
-  int ijk0[3], ijk1[3];
-  bool start_in_mesh;
-  get_indices(r0, ijk0, &start_in_mesh);
-  bool end_in_mesh;
-  get_indices(r1, ijk1, &end_in_mesh);
-
-  // If the starting coordinates do not lie in the mesh, compute the coords and
-  // mesh indices of the first intersection, and add the bin for this first
-  // intersection.  Return if the particle does not intersect the mesh at all.
-  if (!start_in_mesh) {
-    // Compute the incoming intersection coordinates and indices.
-    if (!intersects(r0, r1, ijk0)) return;
-
-    // Determine which surface the particle entered.
-    double min_dist = INFTY;
-    int i_surf;
-    for (int i = 0; i < 3; ++i) {
-      if (u[i] > 0.0 && ijk0[i] == 1) {
-        double d = std::abs(r0[i] - grid_[i][0]);
-        if (d < min_dist) {
-          min_dist = d;
-          i_surf = 4*i + 2;
-        }
-      } else if (u[i] < 0.0 && ijk0[i] == shape_[i]) {
-        double d = std::abs(r0[i] - grid_[i][shape_[i]]);
-        if (d < min_dist) {
-          min_dist = d;
-          i_surf = 4*i + 4;
-        }
-      } // u[i] == 0 intentionally skipped
-    }
-
-    // Add the incoming current bin.
-    int i_mesh = get_bin_from_indices(ijk0);
-    int i_bin = 4*3*i_mesh + i_surf - 1;
-    bins.push_back(i_bin);
-  }
-
-  // If the ending coordinates do not lie in the mesh, compute the coords and
-  // mesh indices of the last intersection, and add the bin for this last
-  // intersection.
-  if (!end_in_mesh) {
-    // Compute the outgoing intersection coordinates and indices.
-    intersects(r1, r0, ijk1);
-
-    // Determine which surface the particle exited.
-    double min_dist = INFTY;
-    int i_surf;
-    for (int i = 0; i < 3; ++i) {
-      if (u[i] > 0.0 && ijk1[i] == shape_[i]) {
-        double d = std::abs(r1[i] - grid_[i][shape_[i]]);
-        if (d < min_dist) {
-          min_dist = d;
-          i_surf = 4*i + 3;
-        }
-      } else if (u[i] < 0.0 && ijk1[i] == 1) {
-        double d = std::abs(r1[i] - grid_[i][0]);
-        if (d < min_dist) {
-          min_dist = d;
-          i_surf = 4*i + 1;
-        }
-      } // u[i] == 0 intentionally skipped
-    }
-
-    // Add the outgoing current bin.
-    int i_mesh = get_bin_from_indices(ijk1);
-    int i_bin = 4*3*i_mesh + i_surf - 1;
-    bins.push_back(i_bin);
-  }
-
-  // ========================================================================
-  // Find which mesh surfaces are crossed.
-
-  // Calculate number of surface crossings
-  int n_cross = 0;
-  for (int i = 0; i < 3; ++i) n_cross += std::abs(ijk1[i] - ijk0[i]);
-  if (n_cross == 0) return;
-
-  // Bounding coordinates
-  Position xyz_cross;
-  for (int i = 0; i < 3; ++i) {
-    if (u[i] > 0.0) {
-      xyz_cross[i] = grid_[i][ijk0[i]];
-    } else {
-      xyz_cross[i] = grid_[i][ijk0[i] - 1];
-    }
-  }
-
-  for (int j = 0; j < n_cross; ++j) {
-    // Set the distances to infinity
-    Position d {INFTY, INFTY, INFTY};
-
-    // Determine closest bounding surface. We need to treat
-    // special case where the cosine of the angle is zero since this would
-    // result in a divide-by-zero.
-    double distance = INFTY;
-    for (int i = 0; i < 3; ++i) {
-      if (u[i] == 0) {
-        d[i] = INFTY;
-      } else {
-        d[i] = (xyz_cross[i] - r0[i])/u[i];
-      }
-      distance = std::min(distance, d[i]);
-    }
-
-    // Loop over the dimensions
-    for (int i = 0; i < 3; ++i) {
-      // Check whether distance is the shortest distance
-      if (distance == d[i]) {
-
-        // Check whether particle is moving in positive i direction
-        if (u[i] > 0) {
-
-          // Outward current on i max surface
-          int i_surf = 4*i + 3;
-          int i_mesh = get_bin_from_indices(ijk0);
-          int i_bin = 4*3*i_mesh + i_surf - 1;
-          bins.push_back(i_bin);
-
-          // Advance position
-          ++ijk0[i];
-          xyz_cross[i] = grid_[i][ijk0[i]];
-
-          // Inward current on i min surface
-          i_surf = 4*i + 2;
-          i_mesh = get_bin_from_indices(ijk0);
-          i_bin = 4*3*i_mesh + i_surf - 1;
-          bins.push_back(i_bin);
-
+    // The track exits this cell.  Determine the distance to the closest mesh
+    // surface.
+    // Upper-right and lower-left sides.
+        double d {INFTY};
+        std::array<int, 3> lattice_trans;
+        double edge = -copysign(0.5*width_[0], beta_dir);  // Oncoming edge
+        Position r_t;
+        if (beta_dir > 0) {
+          const std::array<int, 3> i_xyz_t {ijk0[0], ijk0[1]+1, ijk0[2]};
+          r_t = get_local_position(r0, i_xyz_t);
         } else {
-          // The particle is moving in the negative i direction
-
-          // Outward current on i min surface
-          int i_surf = 4*i + 1;
-          int i_mesh = get_bin_from_indices(ijk0);
-          int i_bin = 4*3*i_mesh + i_surf - 1;
-          bins.push_back(i_bin);
-
-          // Advance position
-          --ijk0[i];
-          xyz_cross[i] = grid_[i][ijk0[i] - 1];
-
-          // Inward current on i min surface
-          i_surf = 4*i + 4;
-          i_mesh = get_bin_from_indices(ijk0);
-          i_bin = 4*3*i_mesh + i_surf - 1;
-          bins.push_back(i_bin);
+          const std::array<int, 3> i_xyz_t {ijk0[0], ijk0[1]-1, ijk0[2]};
+          r_t = get_local_position(r0, i_xyz_t);
         }
-      }
+        double beta = r_t.x / 2.0 + r_t.y * std::sqrt(3.0) / 2.0;
+        if ((std::abs(beta - edge) > FP_PRECISION) && beta_dir != 0) {
+          d = (edge - beta) / beta_dir;
+          if (beta_dir > 0) {
+            lattice_trans = {0, 1, 0};
+          } else {
+            lattice_trans = {0, -1, 0};
+          }
+        }
+
+        // Lower-right and upper-left sides.
+        edge = -copysign(0.5*width_[0], gamma_dir);
+        if (gamma_dir > 0) {
+            const std::array<int, 3> i_xyz_t {ijk0[0]+1, ijk0[1]-1, ijk0[2]};
+            r_t = get_local_position(r0, i_xyz_t);
+          } else {
+            const std::array<int, 3> i_xyz_t {ijk0[0]-1, ijk0[1]+1, ijk0[2]};
+            r_t = get_local_position(r0, i_xyz_t);
+          }
+          double gamma = r_t.x / 2.0 - r_t.y * std::sqrt(3.0) / 2.0;
+          if ((std::abs(gamma - edge) > FP_PRECISION) && gamma_dir != 0) {
+            this_d = (edge - gamma) / gamma_dir;
+            if (this_d < d) {
+              if (gamma_dir > 0) {
+                lattice_trans = {1, -1, 0};
+              } else {
+                lattice_trans = {-1, 1, 0};
+              }
+              d = this_d;
+            }
+          }
+
+        // Upper and lower sides.
+          edge = -copysign(0.5*width_[0], u.x);
+            if (u.x > 0) {
+              const std::array<int, 3> i_xyz_t {ijk0[0]+1, ijk0[1], ijk0[2]};
+              r_t = get_local_position(r0, i_xyz_t);
+            } else {
+              const std::array<int, 3> i_xyz_t {ijk0[0]-1, ijk0[1], ijk0[2]};
+              r_t = get_local_position(r0, i_xyz_t);
+            }
+            if ((std::abs(r_t.x - edge) > FP_PRECISION) && u.x != 0) {
+              this_d = (edge - r_t.x) / u.x;
+              if (this_d < d) {
+                if (u.x > 0) {
+                  lattice_trans = {1, 0, 0};
+                } else {
+                  lattice_trans = {-1, 0, 0};
+                }
+                d = this_d;
+              }
+            }
+
+        // Top and bottom sides
+        if (n_axial_>1) {
+
+          double z = r0.z;
+          double z0;
+          //double z0 {copysign(0.5 * discretez_(ijk0[2]), u.z)};
+          if (u.z > 0) {
+        	   z0 = heightz_(ijk0[2] + 1);
+          }
+          else{
+        	   z0 = heightz_(ijk0[2]);}
+
+          if ((std::abs(z - z0) > FP_PRECISION) && u.z != 0) {
+            this_d = (z0 - z) / u.z;
+            if (this_d < d) {
+              d = this_d;
+              if (u.z > 0) {
+                lattice_trans = {0, 0, 1};
+              } else {
+                lattice_trans = {0, 0, -1};
+              }
+              d = this_d;
+            }
+          }
+        }
+
+
+    double distance = d;
+    if (are_valid_indices(ijk0)){
+    	bins.push_back(get_bin_from_indices(ijk0));
+    	lengths.push_back(distance / total_distance);
     }
 
-    // Calculate new coordinates
+    // Translate the starting coordintes by the distance to the oncoming mesh
+    // surface.
+    bool now_in_hex {in_hex(r0)};
+
     r0 += distance * u;
-  }
-}
 
-int RectilinearMesh::get_bin(Position r) const
-{
-  // Determine indices
-  int ijk[3];
-  bool in_mesh;
-  get_indices(r, ijk, &in_mesh);
-  if (!in_mesh) return -1;
+    ijk0[0] = ijk0[0] + lattice_trans[0];
 
-  // Convert indices to bin
-  return get_bin_from_indices(ijk);
-}
+    ijk0[1] = ijk0[1] + lattice_trans[1];
 
-int RectilinearMesh::get_bin_from_indices(const int* ijk) const
-{
-  return ((ijk[2] - 1)*shape_[1] + (ijk[1] - 1))*shape_[0] + ijk[0] - 1;
-}
+    ijk0[2] = ijk0[2] + lattice_trans[2];
 
-void RectilinearMesh::get_indices(Position r, int* ijk, bool* in_mesh) const
-{
-  *in_mesh = true;
-
-  for (int i = 0; i < 3; ++i) {
-    if (r[i] < grid_[i].front() || r[i] > grid_[i].back()) {
-      ijk[i] = -1;
-      *in_mesh = false;
-    } else {
-      ijk[i] = lower_bound_index(grid_[i].begin(), grid_[i].end(), r[i]) + 1;
+    if ((now_in_hex) && !(in_hex(r0))){
+    	break;
     }
   }
 }
+ void HexMesh::surface_bins_crossed(const Particle* p, std::vector<int>& bins) const
+ {
 
-void RectilinearMesh::get_indices_from_bin(int bin, int* ijk) const
-{
-  ijk[0] = bin % shape_[0] + 1;
-  ijk[1] = (bin % (shape_[0] * shape_[1])) / shape_[0] + 1;
-  ijk[2] = bin / (shape_[0] * shape_[1]) + 1;
-}
+	 constexpr int MAX_SEARCH_ITER = 100;
 
-int RectilinearMesh::n_bins() const
-{
-  int n_bins = 1;
-  for (auto dim : shape_) n_bins *= dim;
-  return n_bins;
-}
 
-int RectilinearMesh::n_surface_bins() const
-{
-  return 4 * n_dimension_ * n_bins();
-}
+	   // ========================================================================
+	   // Determine if the track intersects the tally mesh.
 
-std::pair<std::vector<double>, std::vector<double>>
-RectilinearMesh::plot(Position plot_ll, Position plot_ur) const
-{
-  // Figure out which axes lie in the plane of the plot.
-  std::array<int, 2> axes {-1, -1};
-  if (plot_ur.z == plot_ll.z) {
-    axes = {0, 1};
-  } else if (plot_ur.y == plot_ll.y) {
-    axes = {0, 2};
-  } else if (plot_ur.x == plot_ll.x) {
-    axes = {1, 2};
-  } else {
-    fatal_error("Can only plot mesh lines on an axis-aligned plot");
+	   // Copy the starting and ending coordinates of the particle.  Offset these
+	   // just a bit for the purposes of determining if there was an intersection
+	   // in case the mesh surfaces coincide with lattice/geometric surfaces which
+	   // might produce finite-precision errors.
+	   Position last_r {p->r_last_};
+	   Position r {p->r()};
+	   Direction u {p->u()};
+
+	   Position r0 = last_r + TINY_BIT*u;
+	   Position r1 = r - TINY_BIT*u;
+
+	   // Determine indices for starting and ending location.
+	   int n = n_dimension_;
+	   int ijk0[n], ijk1[n];
+	   bool start_in_mesh;
+	   bool finallycross;
+	   bool end_in_mesh;
+	   int i_bin;
+	   crossing(r0,r1,&ijk0[0],&ijk1[0],finallycross,start_in_mesh,end_in_mesh);
+
+      // std :: cout << "START POINT IS : " << ijk0[0] << " " << ijk0[1] << " "<< ijk0[2] << " " << std ::endl;
+      // std :: cout << "FINISH POINT IS : " << ijk1[0] << " " << ijk1[1] << " "<< ijk1[2] << " " << std ::endl;
+	   // Check if the track intersects any part of the mesh.
+	   if (!start_in_mesh && !end_in_mesh) {
+	     if (!finallycross) return;
+	   }
+
+	   // ========================================================================
+	   // Figure out which mesh cell to tally.
+
+	   // Copy the un-modified coordinates the particle direction.
+	   r0 = last_r;
+	   r1 = r;
+	   // Compute the length of the entire track.
+	   double total_distance = (r1 - r0).norm();
+
+	   // The particle does not start in the mesh.  Note that we nudged the
+	      // start and end coordinates by a TINY_BIT each so we will have
+	      // difficulty resolving tracks that are less than 2*TINY_BIT in length.
+	      // If the track is that short, it is also insignificant so we can
+	      // safely ignore it in the tallies.
+	    if (total_distance < 2*TINY_BIT) return;
+	   //
+	   // Compute the direction on the hexagonal basis.
+	    double beta_dir = u.x*0.5  + u.y * std::sqrt(3.0) / 2.0;
+	    double gamma_dir = u.x*0.5  - u.y * std::sqrt(3.0) / 2.0;
+
+	     // Note that hexagonal lattice distance calculations are performed
+	     // using the particle's coordinates relative to the neighbor lattice
+	     // cells, not relative to the particle's current cell.  This is done
+	     // because there is significant disagreement between neighboring cells
+	     // on where the lattice boundary is due to finite precision issues.
+	   while (true) {
+	     // ========================================================================
+	     // Compute the length of the track segment in the each mesh cell and return
+         double this_d;
+	     if (std::equal(ijk0, ijk0+n, ijk1)) {
+	       // The track ends in this cell.  Use the particle end location rather
+	       // than the mesh surface.
+	       break;
+	     }
+
+	     // The track exits this cell.  Determine the distance to the closest mesh
+	     // surface.
+	     // Upper-right and lower-left sides.
+	     double d {INFTY};
+	             std::array<int, 3> lattice_trans;
+	             double edge = -copysign(0.5*width_[0], beta_dir);  // Oncoming edge
+	             Position r_t;
+	             if (beta_dir > 0) {
+	               const std::array<int, 3> i_xyz_t {ijk0[0], ijk0[1]+1, ijk0[2]};
+	               r_t = get_local_position(r0, i_xyz_t);
+	             } else {
+	               const std::array<int, 3> i_xyz_t {ijk0[0], ijk0[1]-1, ijk0[2]};
+	               r_t = get_local_position(r0, i_xyz_t);
+	             }
+	             double beta = r_t.x / 2.0 + r_t.y * std::sqrt(3.0) / 2.0;
+	         if ((std::abs(beta - edge) > FP_PRECISION) && beta_dir != 0) {
+	           d = (edge - beta) / beta_dir;
+	           if (beta_dir > 0) {
+	             lattice_trans = {0, 1, 0};
+	             i_bin = 2;
+	           } else {
+	             lattice_trans = {0, -1, 0};
+	             i_bin = 4;
+	           }
+	         }
+
+	         // Lower-right and upper-left sides.
+	                edge = -copysign(0.5*width_[0], gamma_dir);
+	                if (gamma_dir > 0) {
+	                    const std::array<int, 3> i_xyz_t {ijk0[0]+1, ijk0[1]-1, ijk0[2]};
+	                    r_t = get_local_position(r0, i_xyz_t);
+	                  } else {
+	                    const std::array<int, 3> i_xyz_t {ijk0[0]-1, ijk0[1]+1, ijk0[2]};
+	                    r_t = get_local_position(r0, i_xyz_t);
+	                  }
+	                  double gamma = r_t.x / 2.0 - r_t.y * std::sqrt(3.0) / 2.0;
+	         if ((std::abs(gamma - edge) > FP_PRECISION) && gamma_dir != 0) {
+	           double this_d = (edge - gamma) / gamma_dir;
+	           if (this_d < d) {
+	             if (gamma_dir > 0) {
+	               lattice_trans = {1, -1, 0};
+	               i_bin = 6;
+	             } else {
+	               lattice_trans = {-1, 1, 0};
+	               i_bin = 8;
+	             }
+	             d = this_d;
+	           }
+	         }
+
+	         edge = -copysign(0.5*width_[0], u.x);
+	                    if (u.x > 0) {
+	                      const std::array<int, 3> i_xyz_t {ijk0[0]+1, ijk0[1], ijk0[2]};
+	                      r_t = get_local_position(r0, i_xyz_t);
+	                    } else {
+	                      const std::array<int, 3> i_xyz_t {ijk0[0]-1, ijk0[1], ijk0[2]};
+	                      r_t = get_local_position(r0, i_xyz_t);
+	                    }
+	                    if ((std::abs(r_t.x - edge) > FP_PRECISION) && u.x != 0) {
+	                      this_d = (edge - r_t.x) / u.x;
+	           if (this_d < d) {
+	             if (u.x > 0) {
+	               lattice_trans = {1, 0, 0};
+	               i_bin = 10;
+	             } else {
+	               lattice_trans = {-1, 0, 0};
+	               i_bin = 12;
+	             }
+	             d = this_d;
+	           }
+	         }
+
+	         // Top and bottom sides
+	                    if (n_axial_>1) {
+
+	                    	 double z = r0.z;
+	                    	 double z0;
+	                    	 //double z0 {copysign(0.5 * discretez_(ijk0[2]), u.z)};
+	                    	 if (u.z > 0) {
+	                    	       z0 = heightz_(ijk0[2] + 1);
+	                    	  }
+	                    	  else{
+	                    	       z0 = heightz_(ijk0[2]);}
+
+	                      if ((std::abs(z - z0) > FP_PRECISION) && u.z != 0) {
+	                        this_d = (z0 - z) / u.z;
+	                        if (this_d < d) {
+	                          d = this_d;
+	                          if (u.z > 0) {
+	                            lattice_trans = {0, 0, 1};
+	                            i_bin = 14;
+	                          } else {
+	                            lattice_trans = {0, 0, -1};
+	                            i_bin = 16;
+	                          }
+	                          d = this_d;
+	                        }
+	                      }
+	                    }
+
+
+	     double distance = d;
+	     if (are_valid_indices(ijk0)){
+	    	 int lpv {get_bin_from_indices(ijk0)};
+	    	 //lpv = shape_[0];
+
+	    	 bins.push_back(4*4*get_bin_from_indices(ijk0) + i_bin - 1);
+
+	     }
+	     // Translate the starting coordintes by the distance to the oncoming mesh
+	     // surface.
+	     bool now_in_hex {in_hex(r0)};
+
+	     r0 += distance * u;
+
+	     ijk0[0] = ijk0[0] + lattice_trans[0];
+
+	     ijk0[1] = ijk0[1] + lattice_trans[1];
+
+	     ijk0[2] = ijk0[2] + lattice_trans[2];
+
+	     if (are_valid_indices(ijk0)){
+
+	    	 bins.push_back(4*4*get_bin_from_indices(ijk0) + i_bin - 2);
+
+
+	    	     }
+
+	     if ((now_in_hex) && !(in_hex(r0))){
+	     	break;
+	     }
+
+	   }
+ }
+
+  //==============================================================================
+  Position
+  HexMesh::get_local_position(Position r, const std::array<int, 3> i_xyz)
+  const
+  {
+
+   // DR for OX implementation
+
+  	  // x_l = x_g - (center + pitch_x*index_a + pitch_y*sin(30)*index_y)
+  	  	r.x -= (center_.x + (i_xyz[0] - n_rings_ + 1) * width_[0]
+  	  	            + (i_xyz[1] - n_rings_ + 1) * width_[0] / 2.0);
+  	  // x_l = x_g - (center + pitch_y*cos(30)*index_y)
+  	    r.y -= center_.y + std::sqrt(3.0)/2.0 * (i_xyz[1] - n_rings_ + 1) * width_[0];
+
+  	  //  r.z -= center_.z + (i_xyz[2] + 0.5)* width_[2];
+  	 // r.z -= center_.z + heightz_(i_xyz[2]); !!!!!!!!!
+  	  r.z -=  heightz_(i_xyz[2]);
+
+  return r;
   }
 
-  // Get the coordinates of the mesh lines along both of the axes.
-  std::array<std::vector<double>, 2> axis_lines;
-  for (int i_ax = 0; i_ax < 2; ++i_ax) {
-    int axis = axes[i_ax];
-    std::vector<double>& lines {axis_lines[i_ax]};
+//==============================================================================
 
-    for (auto coord : grid_[axis]) {
-      if (coord >= plot_ll[axis] && coord <= plot_ur[axis])
-        lines.push_back(coord);
+  bool
+  HexMesh::are_valid_indices(int *i_xyz) const
+  {
+    return ((i_xyz[0] >= 0) && (i_xyz[1] >= 0) && (i_xyz[2] >= 0)
+            && (i_xyz[0] < 2*n_rings_-1) && (i_xyz[1] < 2*n_rings_-1)
+            && (i_xyz[0] + i_xyz[1] > n_rings_-2)
+            && (i_xyz[0] + i_xyz[1] < 3*n_rings_-2)
+            && (i_xyz[2] < n_axial_));
+  }
+
+  //==============================================================================
+  bool
+  HexMesh::layinline(Position bpoint,Position epoint, Position inpoint) const
+  {
+	double dx {std::abs(epoint.x-bpoint.x)};
+	double k;
+	if (dx > TINY_BIT) {
+		k = (epoint.y-bpoint.y)/(epoint.x-bpoint.x);
+	}
+	else
+	{
+		k = 0;
+	}
+	if (k >= 0) {
+		if ((inpoint.x >= bpoint.x) && (epoint.x >= inpoint.x  )) {
+			if ((inpoint.y >= bpoint.y) && (epoint.y >= inpoint.y  )) {
+			    return true;
+			}
+		}
+		if ((inpoint.x <= bpoint.x) && (epoint.x <= inpoint.x  )) {
+					if ((inpoint.y <= bpoint.y) && (epoint.y <= inpoint.y  )) {
+					    return true;
+					}
+				}
+	}
+
+	if (k <= 0) {
+			if ((inpoint.x >= bpoint.x) && (epoint.x >= inpoint.x  )) {
+				if ((inpoint.y <= bpoint.y) && (epoint.y <= inpoint.y  )) {
+				    return true;
+				}
+			}
+			if ((inpoint.x <= bpoint.x) && (epoint.x <= inpoint.x  )) {
+						if ((inpoint.y >= bpoint.y) && (epoint.y >= inpoint.y  )) {
+						    return true;
+						}
+					}
+		}
+   return false;
+  }
+
+  //==============================================================================
+    bool
+	HexMesh::iscross(xt::xarray<Position> &firstline,xt::xarray<Position> &secondline) const
+    {
+    	double a1,b1,c1,a2,b2,c2,det,dx,dy,xi,yi,zi;
+        Position ipoint;
+    	if (firstline(0).x != firstline(1).x){
+    		a1 = -(firstline(1).y - firstline(0).y)/(firstline(1).x - firstline(0).x);
+    		b1 = 1;
+    		c1 = (firstline(1).x*firstline(0).y - firstline(1).y*firstline(0).x)/(firstline(1).x - firstline(0).x);
+    	}
+    	else
+    	{
+    		a1 = 1;
+    		b1 = 1;
+    		c1 = firstline(0).x;
+    	}
+    	if (secondline(0).x != secondline(1).x){
+    	    		a2 = -(secondline(1).y - secondline(0).y)/(secondline(1).x - secondline(0).x);
+    	    		b2 = 1;
+    	    		c2 = (secondline(1).x*secondline(0).y - secondline(1).y*secondline(0).x)/(secondline(1).x - secondline(0).x);
+    	    	}
+    	else
+    	{
+    	    		a2 = 1;
+    	    		b2 = 1;
+    	    		c2 = secondline(0).x;
+    	}
+    	det = a1*b2-a2*b1;
+    	if (std::abs(det) < TINY_BIT){
+    	   return false;
+    	}
+    	else {
+    		dx = (c1*b2 - c2*b1);
+    	    dy = (a1*c2 - a2*c1);
+    		xi = dx/det;
+    		yi = dy/det;
+    		ipoint.x = xi;
+    		ipoint.y = yi;
+    		if (n_axial_ > 1){
+
+    			if (secondline(0).x != secondline(1).x){
+
+    				ipoint.z = secondline(0).z + (xi - secondline(0).x)/(secondline(1).x - secondline(0).x)*(secondline(1).z - secondline(0).z);
+    				if ((ipoint.z > heightz_(n_axial_)) || (ipoint.z < heightz_(0))){
+    					return false;
+    				}
+    			}
+    			else if (secondline(0).y != secondline(1).y){
+    				ipoint.z = secondline(0).z + (yi - secondline(0).y)/(secondline(1).y - secondline(0).y)*(secondline(1).z - secondline(0).z);
+    				if ((ipoint.z > heightz_(n_axial_)) || (ipoint.z < heightz_(0))){
+    				    					return false;
+    			}
+    			}
+    			else
+    			{return false;}
+
+    		}
+	        ipoint.z = 0.0;
+
+    	}
+
+       if (layinline(firstline(0),firstline(1),ipoint)){
+    	   if (layinline(secondline(0),secondline(1),ipoint)){
+    		   return true;
+    	   }
+       }
+       return false;
+    }
+    bool
+	HexMesh::iscross_z(xt::xarray<Position> &line) const {
+    	if (((line(0).z < heightz_(0)) && ((line(1).z > heightz_(0)))) || ((line(1).z < heightz_(0)) && ((line(0).z > heightz_(0))))){
+    		return true;
+    	}
+    	if (((line(0).z > heightz_(n_axial_)) && ((line(1).z < heightz_(n_axial_)))) || ((line(1).z > heightz_(n_axial_)) && ((line(0).z < heightz_(n_axial_))))){
+    	    return true;
+    	}
+    	return false;
+
+    }
+    //==============================================================================
+    bool
+	HexMesh::in_outer_hex(int number,int *ixyz) const
+    {
+    	switch(number){
+    	case(0):
+    			if ((ixyz[0]+ixyz[1]==n_rings_ - 2) && (ixyz[1] <= n_rings_-1) && (ixyz[1] >=0)) {return true;}
+    	case(1):
+				if ((ixyz[0]==2*n_rings_-1) && (ixyz[1] <= n_rings_-1) && (ixyz[1] >=0)) {return true;}
+    	case(2):
+    			if ((ixyz[1]==-1) && (ixyz[0] < 2*n_rings_-1) && (ixyz[0] >=n_rings_- 2)) {return true;}
+    	case(3):
+    			if ((ixyz[0]+ixyz[1]==3*n_rings_ + 2) && (ixyz[1] <= n_rings_-1) && (ixyz[1] >=0)) {return true;}
+    	case(4):
+    			if ((ixyz[0]==-1) && (ixyz[1] <= n_rings_-2) && (ixyz[1] >= 2*n_rings_- 1)) {return true;}
+    	case(5):
+    	    	if ((ixyz[1]==2*n_rings_-1) && (ixyz[0] <= n_rings_-1) && (ixyz[0] >=0)) {return true;}
+
+
+
+    	}
+    }
+    //==============================================================================
+    bool
+	HexMesh::in_hex(Position P) const
+    {
+    	double u {P.x*sqrt(3.0) + P.y};
+    	double w {-P.x*sqrt(3.0) + P.y};
+    	double y {P.y};
+    	double z {P.z};
+    	if (n_axial_ > 1){
+
+    		return ((in_hexagon(P)) && (z > heightz_(0))&& (z < heightz_(n_axial_)));
+
+    	}
+    	else
+    	{
+    		return in_hexagon(P);
+    	}
+
+    }
+
+//==============================================================================
+    bool
+	   HexMesh::in_hexagon(Position P) const{
+
+    	double u {P.x*sqrt(3.0) + P.y};
+    	double w {-P.x*sqrt(3.0) + P.y};
+    	double y {P.y};
+
+    	return ((-_hpp < u) && (u < _hpp) && (-_hpp < w) && (w < _hpp) && (-_hpp/2 < y) && (y < _hpp/2));
+    }
+
+
+//==============================================================================
+  int HexMesh::get_bin(Position r) const
+  {
+
+
+    // Determine indices
+    int ijk[n_dimension_];
+    bool in_mesh;
+    get_indices(r, ijk, &in_mesh);
+    if (!in_mesh) return -1;
+
+    // Convert indices to bin
+    return get_bin_from_indices(ijk);
+  }
+
+  int HexMesh::get_bin_from_indices(const int* ijk) const
+  {
+    switch (n_dimension_) {
+      case 2:
+        return  (2*n_rings_-1) * ijk[1] + ijk[0];
+      case 3:
+        return (ijk[2])*(2*n_rings_-1)*(2*n_rings_-1) + (2*n_rings_-1) * ijk[1] + ijk[0];
+      default:
+        throw std::runtime_error{"Invalid number of mesh dimensions"};
     }
   }
 
-  return {axis_lines[0], axis_lines[1]};
-}
+  void HexMesh::get_indices(Position r, int* ijk, bool* in_mesh) const
+  {
+    // Find particle in mesh
+    *in_mesh = true;
 
-void RectilinearMesh::to_hdf5(hid_t group) const
+     float dbg1;
+     float dbg2;
+     // Offset the xyz by the lattice center.
+     Position r_o {r.x - center_.x, r.y - center_.y, r.z};
+     //r_o.z -= center_.z;!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!ATTENTION
+
+     // Index the z direction.
+     std::array<int, 3> out;
+     //
+     if (n_axial_ < 2){
+    	 ijk[2] = 0;
+     }
+
+     double alpha = r_o.y - r_o.x * std::sqrt(3.0);
+     dbg1=-alpha / (std::sqrt(3.0) * width_[0]);
+     dbg2=r_o.y / 0.5*std::sqrt(3.0) * width_[0];
+     ijk[0] = std::floor(-alpha / (std::sqrt(3.0) * width_[0]));
+     ijk[1] = std::floor(r_o.y / (0.5*std::sqrt(3.0) * width_[0]));
+
+
+     // Add offset to indices (the center cell is (i_x, i_alpha) = (0, 0) but
+     // the array is offset so that the indices never go below 0).
+     ijk[0] += n_rings_-1;
+     ijk[1] += n_rings_-1;
+
+     // Calculate the (squared) distance between the particle and the centers of
+     // the four possible cells.  Regular hexagonal tiles form a Voronoi
+     // tessellation so the xyz should be in the hexagonal cell that it is closest
+     // to the center of.  This method is used over a method that uses the
+     // remainders of the floor divisions above because it provides better finite
+     // precision performance.  Squared distances are used becasue they are more
+     // computationally efficient than normal distances.
+     int k {1};
+     int k_min {1};
+     double d_min {INFTY};
+     for (int i = 0; i < 2; i++) {
+       for (int j = 0; j < 2; j++) {
+         const std::array<int, 3> i_xyz {ijk[0] + j, ijk[1] + i, 0};
+         Position r_t = get_local_position(r, i_xyz);
+         double d = r_t.x*r_t.x + r_t.y*r_t.y;
+         if (d < d_min) {
+           d_min = d;
+           k_min = k;
+         }
+         k++;
+       }
+     }
+
+     // Select the minimum squared distance which corresponds to the cell the
+     // coordinates are in.
+     if (k_min == 2) {
+       ++ijk[0];
+     } else if (k_min == 3) {
+       ++ijk[1];
+     } else if (k_min == 4) {
+       ++ijk[0];
+       ++ijk[1];
+     }
+
+     if (n_axial_ > 1){
+
+     if (r_o.z <= heightz_(0) ) {
+    	 ijk[2] = -1;
+     }
+     else if (r_o.z >= heightz_(n_axial_) ) {
+    	 ijk[2] = n_axial_;
+     }
+     else{
+    	 for (int it = 0; it!=n_axial_;it++){
+    		 if ((r_o.z > heightz_(it)) && (r_o.z < heightz_(it+1))) {
+    			 ijk[2] = it;
+    			 break;
+    		 }
+    	 }
+     }
+
+     }
+
+     if (!are_valid_indices(ijk)) {*in_mesh = false;}
+  }
+
+  void HexMesh::get_indices_from_bin(int bin, int* ijk) const
+  {
+      int nx {2*n_rings_ - 1};
+	  int ny {2*n_rings_ - 1};
+	  int iz {bin / (nx * ny)};
+	  int iy {(bin - nx * ny * iz) / nx};
+	  int ix {bin - nx * ny * iz - nx * iy};
+	  ijk[0] = ix;
+	  ijk[1] = iy;
+	  ijk[2] = iz;
+  }
+
+  bool HexMesh::intersects(Position r0, Position r1) const
+  {
+    switch(n_dimension_) {
+      case 1:
+        return true;//intersects_1d(r0, r1);
+      case 2:
+        return true;//intersects_2d(r0, r1);
+      case 3:
+        return true;//intersects_3d(r0, r1);
+      default:
+        throw std::runtime_error{"Invalid number of mesh dimensions."};
+    }
+  }
+//
+void HexMesh::crossing(Position r0,Position r1,int* posA,int* posB,bool& finallycross,bool& startinmesh, bool& endinmesh) const
+  {
+	  finallycross=false;
+	  get_indices(r0 , posA, &startinmesh);
+	  get_indices(r1 , posB, &endinmesh);
+	  xt::xarray<Position> crossline({2});
+	  crossline(0) = r0;
+	  crossline(1) = r1;
+	  for (int i = 0; i < 6; i++) {
+		  xt::xarray<Position> line6 {xt::view(lines,xt::all(),i)};
+		  if (iscross(line6, crossline)){
+
+			      finallycross = true;
+
+			  if ((!startinmesh) && (!endinmesh) && (in_outer_hex(i,posA)) && (in_outer_hex(i,posB))) {
+
+				  finallycross = false;
+			  }
+
+		  }
+	  }
+	  if (!finallycross){
+
+		  if ((!startinmesh) && (!endinmesh)){
+
+			  if ((in_hex(r0)) && (in_hex(r1))){
+
+				  if (posA != posB){
+
+					  finallycross = true;
+				  }
+			  }
+			  else if (n_axial_>1){
+				  if ((iscross_z(crossline)) && (in_hexagon(crossline(0))) && (in_hexagon(crossline(1)))){
+
+					  finallycross = true;
+
+				  }
+			  }
+		  }
+
+	  }
+
+  }
+void HexMesh::to_hdf5(hid_t group) const
 {
   hid_t mesh_group = create_group(group, "mesh " + std::to_string(id_));
-
-  write_dataset(mesh_group, "type", "rectilinear");
-  write_dataset(mesh_group, "x_grid", grid_[0]);
-  write_dataset(mesh_group, "y_grid", grid_[1]);
-  write_dataset(mesh_group, "z_grid", grid_[2]);
+  std :: cout << "\n STATEPONT shape size  " << shape_.size() << " shape DIM1 "<<shape_(1)<< " shape DIM2 "<<shape_(2)<< " shape DIM3 "<<shape_(3)<< "\n";
+  write_dataset(mesh_group, "type", "regular");
+  write_dataset(mesh_group, "dimension", shape_);
+  write_dataset(mesh_group, "lower_left", lower_left_);
+  write_dataset(mesh_group, "upper_right", upper_right_);
+  write_dataset(mesh_group, "width", width_);
 
   close_group(mesh_group);
 }
 
-bool RectilinearMesh::intersects(Position& r0, Position r1, int* ijk) const
+xt::xarray<double>
+HexMesh::count_sites(const std::vector<Particle::Bank>& bank,
+  bool* outside) const
 {
-  // Copy coordinates of starting point
-  double x0 = r0.x;
-  double y0 = r0.y;
-  double z0 = r0.z;
+  // Determine shape of array for counts
+  std::size_t m = xt::prod(shape_)();
+  std::vector<std::size_t> shape = {m};
 
-  // Copy coordinates of ending point
-  double x1 = r1.x;
-  double y1 = r1.y;
-  double z1 = r1.z;
+  // Create array of zeros
+  xt::xarray<double> cnt {shape, 0.0};
+  bool outside_ = false;
 
-  // Copy coordinates of mesh lower_left
-  double xm0 = grid_[0].front();
-  double ym0 = grid_[1].front();
-  double zm0 = grid_[2].front();
+  for (const auto& site : bank) {
+    // determine scoring bin for entropy mesh
+    int mesh_bin = get_bin(site.r);
 
-  // Copy coordinates of mesh upper_right
-  double xm1 = grid_[0].back();
-  double ym1 = grid_[1].back();
-  double zm1 = grid_[2].back();
-
-  double min_dist = INFTY;
-
-  // Check if line intersects left surface -- calculate the intersection point
-  // (y,z)
-  if ((x0 < xm0 && x1 > xm0) || (x0 > xm0 && x1 < xm0)) {
-    double yi = y0 + (xm0 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm0 - x0) * (z1 - z0) / (x1 - x0);
-    if (yi >= ym0 && yi < ym1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xm0, x0, yi, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = 1;
-        ijk[1] = lower_bound_index(grid_[1].begin(), grid_[1].end(), yi) + 1;
-        ijk[2] = lower_bound_index(grid_[2].begin(), grid_[2].end(), zi) + 1;
-      }
+    // if outside mesh, skip particle
+    if (mesh_bin < 0) {
+      outside_ = true;
+      continue;
     }
+
+    // Add to appropriate bin
+    cnt(mesh_bin) += site.wgt;
   }
 
-  // Check if line intersects back surface -- calculate the intersection point
-  // (x,z)
-  if ((y0 < ym0 && y1 > ym0) || (y0 > ym0 && y1 < ym0)) {
-    double xi = x0 + (ym0 - y0) * (x1 - x0) / (y1 - y0);
-    double zi = z0 + (ym0 - y0) * (z1 - z0) / (y1 - y0);
-    if (xi >= xm0 && xi < xm1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xi, x0, ym0, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = lower_bound_index(grid_[0].begin(), grid_[0].end(), xi) + 1;
-        ijk[1] = 1;
-        ijk[2] = lower_bound_index(grid_[2].begin(), grid_[2].end(), zi) + 1;
-      }
-    }
-  }
+  // Create copy of count data
+  int total = cnt.size();
+  double* cnt_reduced = new double[total];
 
-  // Check if line intersects bottom surface -- calculate the intersection
-  // point (x,y)
-  if ((z0 < zm0 && z1 > zm0) || (z0 > zm0 && z1 < zm0)) {
-    double xi = x0 + (zm0 - z0) * (x1 - x0) / (z1 - z0);
-    double yi = y0 + (zm0 - z0) * (y1 - y0) / (z1 - z0);
-    if (xi >= xm0 && xi < xm1 && yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xi, x0, yi, y0, zm0, z0, r0, min_dist)) {
-        ijk[0] = lower_bound_index(grid_[0].begin(), grid_[0].end(), xi) + 1;
-        ijk[1] = lower_bound_index(grid_[1].begin(), grid_[1].end(), yi) + 1;
-        ijk[2] = 1;
-      }
-    }
-  }
+#ifdef OPENMC_MPI
+  // collect values from all processors
+  MPI_Reduce(cnt.data(), cnt_reduced, total, MPI_DOUBLE, MPI_SUM, 0,
+    mpi::intracomm);
 
-  // Check if line intersects right surface -- calculate the intersection point
-  // (y,z)
-  if ((x0 < xm1 && x1 > xm1) || (x0 > xm1 && x1 < xm1)) {
-    double yi = y0 + (xm1 - x0) * (y1 - y0) / (x1 - x0);
-    double zi = z0 + (xm1 - x0) * (z1 - z0) / (x1 - x0);
-    if (yi >= ym0 && yi < ym1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xm1, x0, yi, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = shape_[0];
-        ijk[1] = lower_bound_index(grid_[1].begin(), grid_[1].end(), yi) + 1;
-        ijk[2] = lower_bound_index(grid_[2].begin(), grid_[2].end(), zi) + 1;
-      }
-    }
+  // Check if there were sites outside the mesh for any processor
+  if (outside) {
+    MPI_Reduce(&outside_, outside, 1, MPI_C_BOOL, MPI_LOR, 0, mpi::intracomm);
   }
+#else
+  std::copy(cnt.data(), cnt.data() + total, cnt_reduced);
+  if (outside) *outside = outside_;
+#endif
 
-  // Check if line intersects front surface -- calculate the intersection point
-  // (x,z)
-  if ((y0 < ym1 && y1 > ym1) || (y0 > ym1 && y1 < ym1)) {
-    double xi = x0 + (ym1 - y0) * (x1 - x0) / (y1 - y0);
-    double zi = z0 + (ym1 - y0) * (z1 - z0) / (y1 - y0);
-    if (xi >= xm0 && xi < xm1 && zi >= zm0 && zi < zm1) {
-      if (check_intersection_point(xi, x0, ym1, y0, zi, z0, r0, min_dist)) {
-        ijk[0] = lower_bound_index(grid_[0].begin(), grid_[0].end(), xi) + 1;
-        ijk[1] = shape_[1];
-        ijk[2] = lower_bound_index(grid_[2].begin(), grid_[2].end(), zi) + 1;
-      }
-    }
-  }
+  // Adapt reduced values in array back into an xarray
+  auto arr = xt::adapt(cnt_reduced, total, xt::acquire_ownership(), shape);
+  xt::xarray<double> counts = arr;
 
-  // Check if line intersects top surface -- calculate the intersection point
-  // (x,y)
-  if ((z0 < zm1 && z1 > zm1) || (z0 > zm1 && z1 < zm1)) {
-    double xi = x0 + (zm1 - z0) * (x1 - x0) / (z1 - z0);
-    double yi = y0 + (zm1 - z0) * (y1 - y0) / (z1 - z0);
-    if (xi >= xm0 && xi < xm1 && yi >= ym0 && yi < ym1) {
-      if (check_intersection_point(xi, x0, yi, y0, zm1, z0, r0, min_dist)) {
-        ijk[0] = lower_bound_index(grid_[0].begin(), grid_[0].end(), xi) + 1;
-        ijk[1] = lower_bound_index(grid_[1].begin(), grid_[1].end(), yi) + 1;
-        ijk[2] = shape_[2];
-      }
-    }
-  }
-
-  return min_dist < INFTY;
+  return counts;
 }
-
-//==============================================================================
-// Helper functions for the C API
-//==============================================================================
-
-int
-check_mesh(int32_t index)
-{
-  if (index < 0 || index >= model::meshes.size()) {
-    set_errmsg("Index in meshes array is out of bounds.");
-    return OPENMC_E_OUT_OF_BOUNDS;
-  }
-  return 0;
-}
-
-int
-check_regular_mesh(int32_t index, RegularMesh** mesh)
-{
-  if (int err = check_mesh(index)) return err;
-  *mesh = dynamic_cast<RegularMesh*>(model::meshes[index].get());
-  if (!*mesh) {
-    set_errmsg("This function is only valid for regular meshes.");
-    return OPENMC_E_INVALID_TYPE;
-  }
-  return 0;
-}
-
 //==============================================================================
 // C API functions
 //==============================================================================
@@ -1361,7 +1808,7 @@ openmc_extend_meshes(int32_t n, int32_t* index_start, int32_t* index_end)
 {
   if (index_start) *index_start = model::meshes.size();
   for (int i = 0; i < n; ++i) {
-    model::meshes.push_back(std::make_unique<RegularMesh>());
+    model::meshes.push_back(std::make_unique<RectMesh>());
   }
   if (index_end) *index_end = model::meshes.size() - 1;
 
@@ -1385,7 +1832,10 @@ openmc_get_mesh_index(int32_t id, int32_t* index)
 extern "C" int
 openmc_mesh_get_id(int32_t index, int32_t* id)
 {
-  if (int err = check_mesh(index)) return err;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
   *id = model::meshes[index]->id_;
   return 0;
 }
@@ -1394,7 +1844,10 @@ openmc_mesh_get_id(int32_t index, int32_t* id)
 extern "C" int
 openmc_mesh_set_id(int32_t index, int32_t id)
 {
-  if (int err = check_mesh(index)) return err;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
   model::meshes[index]->id_ = id;
   model::mesh_map[id] = index;
   return 0;
@@ -1404,10 +1857,12 @@ openmc_mesh_set_id(int32_t index, int32_t id)
 extern "C" int
 openmc_mesh_get_dimension(int32_t index, int** dims, int* n)
 {
-  RegularMesh* mesh;
-  if (int err = check_regular_mesh(index, &mesh)) return err;
-  *dims = mesh->shape_.data();
-  *n = mesh->n_dimension_;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
+  *dims = model::meshes[index]->shape_.data();
+  *n = model::meshes[index]->n_dimension_;
   return 0;
 }
 
@@ -1415,13 +1870,16 @@ openmc_mesh_get_dimension(int32_t index, int** dims, int* n)
 extern "C" int
 openmc_mesh_set_dimension(int32_t index, int n, const int* dims)
 {
-  RegularMesh* mesh;
-  if (int err = check_regular_mesh(index, &mesh)) return err;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
 
   // Copy dimension
   std::vector<std::size_t> shape = {static_cast<std::size_t>(n)};
-  mesh->shape_ = xt::adapt(dims, n, xt::no_ownership(), shape);
-  mesh->n_dimension_ = mesh->shape_.size();
+  auto& m = model::meshes[index];
+  m->shape_ = xt::adapt(dims, n, xt::no_ownership(), shape);
+  m->n_dimension_ = m->shape_.size();
 
   return 0;
 }
@@ -1430,9 +1888,12 @@ openmc_mesh_set_dimension(int32_t index, int n, const int* dims)
 extern "C" int
 openmc_mesh_get_params(int32_t index, double** ll, double** ur, double** width, int* n)
 {
-  RegularMesh* m;
-  if (int err = check_regular_mesh(index, &m)) return err;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
 
+  auto& m = model::meshes[index];
   if (m->lower_left_.dimension() == 0) {
     set_errmsg("Mesh parameters have not been set.");
     return OPENMC_E_ALLOCATE;
@@ -1450,9 +1911,12 @@ extern "C" int
 openmc_mesh_set_params(int32_t index, int n, const double* ll, const double* ur,
                        const double* width)
 {
-  RegularMesh* m;
-  if (int err = check_regular_mesh(index, &m)) return err;
+  if (index < 0 || index >= model::meshes.size()) {
+    set_errmsg("Index in meshes array is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
 
+  auto& m = model::meshes[index];
   std::vector<std::size_t> shape = {static_cast<std::size_t>(n)};
   if (ll && ur) {
     m->lower_left_ = xt::adapt(ll, n, xt::no_ownership(), shape);
@@ -1480,26 +1944,23 @@ openmc_mesh_set_params(int32_t index, int n, const double* ll, const double* ur,
 
 void read_meshes(pugi::xml_node root)
 {
-  for (auto node : root.children("mesh")) {
-    std::string mesh_type;
-    if (check_for_node(node, "type")) {
-      mesh_type = get_node_value(node, "type", true, true);
-    } else {
-      mesh_type = "regular";
-    }
-
-    // Read mesh and add to vector
-    if (mesh_type == "regular") {
-      model::meshes.push_back(std::make_unique<RegularMesh>(node));
-    } else if (mesh_type == "rectilinear") {
-      model::meshes.push_back(std::make_unique<RectilinearMesh>(node));
-    } else {
-      fatal_error("Invalid mesh type: " + mesh_type);
-    }
-
-    // Map ID to position in vector
-    model::mesh_map[model::meshes.back()->id_] = model::meshes.size() - 1;
-  }
+	std :: cout << "Reading meshes";
+	write_message("Reading meshes", 5);
+	for (auto node : root.children("mesh")) {
+	    // Read mesh and add to vector
+		std :: cout << "Rect meshes\n";
+		write_message("Rect meshes", 5);
+		  model::meshes.push_back(std::make_unique<RectMesh>(node));
+		  model::mesh_map[model::meshes.back()->id_] = model::meshes.size() - 1;
+	  }
+	  //
+	  for (auto node : root.children("hexmesh")) {
+		  std :: cout << "Hex meshes\n";
+	      // Read mesh and add to vector
+		  write_message("Hex meshes", 5);
+	  	  model::meshes.push_back(std::make_unique<HexMesh>(node));
+	  	  model::mesh_map[model::meshes.back()->id_] = model::meshes.size() - 1;
+	    }
 }
 
 void meshes_to_hdf5(hid_t group)

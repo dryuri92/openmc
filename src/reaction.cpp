@@ -42,6 +42,8 @@ Reaction::Reaction(hid_t group, const std::vector<int>& temperatures)
     // Get threshold index
     TemperatureXS xs;
     read_attribute(dset, "threshold_idx", xs.threshold);
+    // TODO: change HDF5 format so that threshold_idx is 0-based
+    --xs.threshold;
 
     // Read cross section values
     read_dataset(dset, xs.value);
@@ -119,8 +121,6 @@ std::string reaction_name(int mt)
     return  "fission-q-prompt";
   } else if (mt == SCORE_FISS_Q_RECOV) {
     return  "fission-q-recoverable";
-  } else if (mt == SCORE_HEATING) {
-    return  "heating";
 
   // Normal ENDF-based reactions
   } else if (mt == TOTAL_XS) {

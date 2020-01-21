@@ -12,7 +12,10 @@
 
 #include "openmc/constants.h"
 #include "openmc/position.h"
-#include "dagmc.h"
+
+#ifdef DAGMC
+#include "DagMC.hpp"
+#endif
 
 namespace openmc {
 
@@ -43,46 +46,12 @@ namespace model {
 
 struct BoundingBox
 {
-  double xmin = -INFTY;
-  double xmax = INFTY;
-  double ymin = -INFTY;
-  double ymax = INFTY;
-  double zmin = -INFTY;
-  double zmax = INFTY;
-
-
-  inline BoundingBox operator &(const BoundingBox& other) {
-    BoundingBox result = *this;
-    return result &= other;
-  }
-
-  inline BoundingBox operator |(const BoundingBox& other) {
-    BoundingBox result = *this;
-    return result |= other;
-  }
-
-  // intersect operator
-  inline BoundingBox& operator &=(const BoundingBox& other) {
-    xmin = std::max(xmin, other.xmin);
-    xmax = std::min(xmax, other.xmax);
-    ymin = std::max(ymin, other.ymin);
-    ymax = std::min(ymax, other.ymax);
-    zmin = std::max(zmin, other.zmin);
-    zmax = std::min(zmax, other.zmax);
-    return *this;
-  }
-
-  // union operator
-  inline BoundingBox& operator |=(const BoundingBox& other) {
-    xmin = std::min(xmin, other.xmin);
-    xmax = std::max(xmax, other.xmax);
-    ymin = std::min(ymin, other.ymin);
-    ymax = std::max(ymax, other.ymax);
-    zmin = std::min(zmin, other.zmin);
-    zmax = std::max(zmax, other.zmax);
-    return *this;
-  }
-
+  double xmin;
+  double xmax;
+  double ymin;
+  double ymax;
+  double zmin;
+  double zmax;
 };
 
 //==============================================================================
@@ -113,7 +82,7 @@ public:
   //! \param[in] r The point at which the ray is incident.
   //! \param[in] u Incident direction of the ray
   //! \return Outgoing direction of the ray
-  virtual Direction reflect(Position r, Direction u) const;
+  Direction reflect(Position r, Direction u) const;
 
   //! Evaluate the equation describing the surface.
   //!
@@ -139,8 +108,6 @@ public:
   //TODO: this probably needs to include i_periodic for PeriodicSurface
   virtual void to_hdf5(hid_t group_id) const = 0;
 
-  //! Get the BoundingBox for this surface.
-  virtual BoundingBox bounding_box(bool pos_side) const { return {}; }
 };
 
 class CSGSurface : public Surface
@@ -162,17 +129,17 @@ protected:
 class DAGSurface : public Surface
 {
 public:
+  moab::DagMC* dagmc_ptr_;
   DAGSurface();
+  int32_t dag_index_;
 
   double evaluate(Position r) const;
   double distance(Position r, Direction u, bool coincident) const;
   Direction normal(Position r) const;
-  Direction reflect(Position r, Direction u) const;
+  //! Get the bounding box of this surface.
+  BoundingBox bounding_box() const;
 
   void to_hdf5(hid_t group_id) const;
-
-  moab::DagMC* dagmc_ptr_; //!< Pointer to DagMC instance
-  int32_t dag_index_;      //!< DagMC index of surface
 };
 #endif
 //==============================================================================
@@ -201,6 +168,8 @@ public:
   virtual bool periodic_translate(const PeriodicSurface* other, Position& r,
                                   Direction& u) const = 0;
 
+  //! Get the bounding box for this surface.
+  virtual BoundingBox bounding_box() const = 0;
 };
 
 //==============================================================================
@@ -219,7 +188,7 @@ public:
   void to_hdf5_inner(hid_t group_id) const;
   bool periodic_translate(const PeriodicSurface* other, Position& r,
                           Direction& u) const;
-  BoundingBox bounding_box(bool pos_side) const;
+  BoundingBox bounding_box() const;
 
   double x0_;
 };
@@ -240,7 +209,7 @@ public:
   void to_hdf5_inner(hid_t group_id) const;
   bool periodic_translate(const PeriodicSurface* other, Position& r,
                           Direction& u) const;
-  BoundingBox bounding_box(bool pos_side) const;
+  BoundingBox bounding_box() const;
 
   double y0_;
 };
@@ -261,7 +230,7 @@ public:
   void to_hdf5_inner(hid_t group_id) const;
   bool periodic_translate(const PeriodicSurface* other, Position& r,
                           Direction& u) const;
-  BoundingBox bounding_box(bool pos_side) const;
+  BoundingBox bounding_box() const;
 
   double z0_;
 };
@@ -282,6 +251,7 @@ public:
   void to_hdf5_inner(hid_t group_id) const;
   bool periodic_translate(const PeriodicSurface* other, Position& r,
                           Direction& u) const;
+  BoundingBox bounding_box() const;
 
   double A_, B_, C_, D_;
 };
@@ -301,7 +271,6 @@ public:
   double distance(Position r, Direction u, bool coincident) const;
   Direction normal(Position r) const;
   void to_hdf5_inner(hid_t group_id) const;
-  BoundingBox bounding_box(bool pos_side) const;
 
   double y0_, z0_, radius_;
 };
@@ -321,7 +290,6 @@ public:
   double distance(Position r, Direction u, bool coincident) const;
   Direction normal(Position r) const;
   void to_hdf5_inner(hid_t group_id) const;
-  BoundingBox bounding_box(bool pos_side) const;
 
   double x0_, z0_, radius_;
 };
@@ -341,7 +309,6 @@ public:
   double distance(Position r, Direction u, bool coincident) const;
   Direction normal(Position r) const;
   void to_hdf5_inner(hid_t group_id) const;
-  BoundingBox bounding_box(bool pos_side) const;
 
   double x0_, y0_, radius_;
 };
@@ -361,7 +328,6 @@ public:
   double distance(Position r, Direction u, bool coincident) const;
   Direction normal(Position r) const;
   void to_hdf5_inner(hid_t group_id) const;
-  BoundingBox bounding_box(bool pos_side) const;
 
   double x0_, y0_, z0_, radius_;
 };

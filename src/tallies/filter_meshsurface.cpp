@@ -75,7 +75,8 @@ void
 MeshSurfaceFilter::set_mesh(int32_t mesh)
 {
   mesh_ = mesh;
-  n_bins_ = model::meshes[mesh_]->n_surface_bins();
+  n_bins_ = 4 * model::meshes[mesh_]->n_dimension_;
+  for (auto dim : model::meshes[mesh_]->shape_) n_bins_ *= dim;
 }
 
 //==============================================================================

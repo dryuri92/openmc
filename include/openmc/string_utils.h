@@ -10,8 +10,6 @@ std::string& strtrim(std::string& s);
 
 char* strtrim(char* c_str);
 
-std::string to_element(const std::string& name);
-
 void to_lower(std::string& str);
 
 int word_count(std::string const& str);

@@ -2,6 +2,8 @@
 
 Contains results generation and saving capabilities.
 """
+import os
+import shutil
 
 from collections import OrderedDict
 import copy
@@ -10,7 +12,7 @@ from warnings import warn
 import numpy as np
 import h5py
 
-from . import comm, have_mpi, MPI
+from . import comm, have_mpi
 from .reaction_rates import ReactionRates
 
 _VERSION_RESULTS = (1, 0)
@@ -21,8 +23,8 @@ class Results(object):
 
     Attributes
     ----------
-    k : list of (float, float)
-        Eigenvalue and uncertainty for each substep.
+    k : list of float
+        Eigenvalue for each substep.
     time : list of float
         Time at beginning, end of step, in seconds.
     power : float
@@ -47,9 +49,6 @@ class Results(object):
         Number of stages in simulation.
     data : numpy.ndarray
         Atom quantity, stored by stage, mat, then by nuclide.
-    proc_time: int
-        Average time spent depleting a material across all
-        materials and processes
 
     """
     def __init__(self):
@@ -58,7 +57,6 @@ class Results(object):
         self.power = None
         self.rates = None
         self.volume = None
-        self.proc_time = None
 
         self.mat_to_ind = None
         self.nuc_to_ind = None
@@ -153,37 +151,6 @@ class Results(object):
         # Create storage array
         self.data = np.zeros((stages, self.n_mat, self.n_nuc))
 
-    def distribute(self, local_materials, ranges):
-        """Create a new object containing data for distributed materials
-
-        Parameters
-        ----------
-        local_materials : iterable of str
-            Materials for this process
-        ranges : iterable of int
-            Slice-like object indicating indicies of ``local_materials``
-            in the material dimension of :attr:`data` and each element
-            in :attr:`rates`
-
-        Returns
-        -------
-        Results
-            New results object
-        """
-        new = Results()
-        new.volume = {lm: self.volume[lm] for lm in local_materials}
-        new.mat_to_ind = dict(zip(
-            local_materials, range(len(local_materials))))
-        # Direct transfer
-        direct_attrs = ("time", "k", "power", "nuc_to_ind",
-                        "mat_to_hdf5_ind", "proc_time")
-        for attr in direct_attrs:
-            setattr(new, attr, getattr(self, attr))
-        # Get applicable slice of data
-        new.data = self.data[:, ranges]
-        new.rates = [r[ranges] for r in self.rates]
-        return new
-
     def export_to_hdf5(self, filename, step):
         """Export results to an HDF5 file
 
@@ -272,17 +239,13 @@ class Results(object):
                               chunks=(1, 1, n_mats, n_nuc_rxn, n_rxn),
                               dtype='float64')
 
-        handle.create_dataset("eigenvalues", (1, n_stages, 2),
-                              maxshape=(None, n_stages, 2), dtype='float64')
+        handle.create_dataset("eigenvalues", (1, n_stages),
+                              maxshape=(None, n_stages), dtype='float64')
 
         handle.create_dataset("time", (1, 2), maxshape=(None, 2), dtype='float64')
 
         handle.create_dataset("power", (1, n_stages), maxshape=(None, n_stages),
                               dtype='float64')
-
-        handle.create_dataset(
-            "depletion time", (1,), maxshape=(None,),
-            dtype="float64")
 
     def _to_hdf5(self, handle, index):
         """Converts results object into an hdf5 object.
@@ -307,7 +270,6 @@ class Results(object):
         eigenvalues_dset = handle["/eigenvalues"]
         time_dset = handle["/time"]
         power_dset = handle["/power"]
-        proc_time_dset = handle["/depletion time"]
 
         # Get number of results stored
         number_shape = list(number_dset.shape)
@@ -336,10 +298,6 @@ class Results(object):
             power_shape[0] = new_shape
             power_dset.resize(power_shape)
 
-            proc_shape = list(proc_time_dset.shape)
-            proc_shape[0] = new_shape
-            proc_time_dset.resize(proc_shape)
-
         # If nothing to write, just return
         if len(self.mat_to_ind) == 0:
             return
@@ -358,10 +316,6 @@ class Results(object):
         if comm.rank == 0:
             time_dset[index, :] = self.time
             power_dset[index, :] = self.power
-            if self.proc_time is not None:
-                proc_time_dset[index] = (
-                    self.proc_time / (comm.size * self.n_hdf5_mats)
-                )
 
     @classmethod
     def from_hdf5(cls, handle, step):
@@ -372,7 +326,8 @@ class Results(object):
         handle : h5py.File or h5py.Group
             An HDF5 file or group type to load from.
         step : int
-            Index for depletion step
+            What step is this?
+
         """
         results = cls()
 
@@ -386,14 +341,6 @@ class Results(object):
         results.k = eigenvalues_dset[step, :]
         results.time = time_dset[step, :]
         results.power = power_dset[step, :]
-
-        if "depletion time" in handle:
-            proc_time_dset = handle["/depletion time"]
-            if step < proc_time_dset.shape[0]:
-                results.proc_time = proc_time_dset[step]
-
-        if results.proc_time is None:
-            results.proc_time = np.array([np.nan])
 
         # Reconstruct dictionaries
         results.volume = OrderedDict()
@@ -430,7 +377,7 @@ class Results(object):
         return results
 
     @staticmethod
-    def save(op, x, op_results, t, power, step_ind, proc_time=None):
+    def save(op, x, op_results, t, power, step_ind):
         """Creates and writes depletion results to disk
 
         Parameters
@@ -447,16 +394,29 @@ class Results(object):
             Power during time step
         step_ind : int
             Step index.
-        proc_time : float or None
-            Total process time spent depleting materials. This may
-            be process-dependent and will be reduced across MPI
-            processes.
 
         """
         # Get indexing terms
         vol_dict, nuc_list, burn_list, full_burn_list = op.get_results_info()
-
+        print("Current directory {} \n".format(os.getcwd()))#debug
+        #print("Copying ...\n")#debug
+        #print("From {0} to {1}\n".format(os.path.join(os.getcwd(),"summary.h5"),os.path.join(os.getcwd(),"bp/{}/summary.h5".format(step_ind))))
+        if (step_ind > 0):shutil.copyfile(os.path.join(os.getcwd(),"summarybp.h5"),os.path.join(os.getcwd(),"bp/{}/summarybp.h5".format(step_ind)))
+        shutil.copyfile(os.path.join(os.getcwd(),"settings_m.xml"),os.path.join(os.getcwd(),"bp/{}/settings.xml".format(step_ind)))
+        shutil.copyfile(os.path.join(os.getcwd(),"tallies_m.xml"),os.path.join(os.getcwd(),"bp/{}/tallies.xml".format(step_ind)))
+        shutil.copyfile(os.path.join(os.getcwd(),"materials.xml"),os.path.join(os.getcwd(),"bp/{}/materials.xml".format(step_ind)))
+        shutil.copyfile(os.path.join(os.getcwd(),"geometry.xml"),os.path.join(os.getcwd(),"bp/{}/geometry.xml".format(step_ind)))
+        #shutil.copyfile(os.path.join(os.getcwd(),"statepoint.100.h5"),os.path.join(os.getcwd(),"bp/{}/statepoint.100.h5".format(step_ind)))
+        # For a restart calculation, limit number of stages saved to meet the
+        # format of the hdf5 file
         stages = len(x)
+        offset = 0
+        if op.prev_res is not None and op.prev_res[0].n_stages < stages:
+            offset = stages - op.prev_res[0].n_stages
+            stages = min(stages, op.prev_res[0].n_stages)
+            warn("Number of restart integrator stages saved limited by initial"
+                 " depletion integrator choice to {}"
+                 .format(op.prev_res[0].n_stages))
 
         # Create results
         results = Results()
@@ -466,15 +426,12 @@ class Results(object):
 
         for i in range(stages):
             for mat_i in range(n_mat):
-                results[i, mat_i, :] = x[i][mat_i]
+                results[i, mat_i, :] = x[offset + i][mat_i][:]
 
-        results.k = [(r.k.nominal_value, r.k.std_dev) for r in op_results]
+        results.k = [r.k for r in op_results]
         results.rates = [r.rates for r in op_results]
         results.time = t
         results.power = power
-        results.proc_time = proc_time
-        if results.proc_time is not None:
-            results.proc_time = comm.reduce(proc_time, op=MPI.SUM)
 
         results.export_to_hdf5("depletion_results.h5", step_ind)
 

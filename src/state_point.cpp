@@ -29,6 +29,9 @@
 
 namespace openmc {
 
+extern "C" void statepoint_write_f(hid_t file_id);
+extern "C" void load_state_point_f(hid_t file_id);
+
 extern "C" int
 openmc_statepoint_write(const char* filename, bool* write_source)
 {
@@ -141,13 +144,13 @@ openmc_statepoint_write(const char* filename, bool* write_source)
       std::vector<int32_t> filter_ids;
       filter_ids.reserve(model::tally_filters.size());
       for (const auto& filt : model::tally_filters)
-        filter_ids.push_back(filt->id());
+        filter_ids.push_back(filt->id_);
       write_attribute(filters_group, "ids", filter_ids);
 
       // Write info for each filter
       for (const auto& filt : model::tally_filters) {
         hid_t filter_group = create_group(filters_group,
-          "filter " + std::to_string(filt->id()));
+          "filter " + std::to_string(filt->id_));
         filt->to_statepoint(filter_group);
         close_group(filter_group);
       }
@@ -188,7 +191,7 @@ openmc_statepoint_write(const char* filename, bool* write_source)
           std::vector<int32_t> filter_ids;
           filter_ids.reserve(tally.filters().size());
           for (auto i_filt : tally.filters())
-            filter_ids.push_back(model::tally_filters[i_filt]->id());
+            filter_ids.push_back(model::tally_filters[i_filt]->id_);
           write_dataset(tally_group, "filters", filter_ids);
         }
 

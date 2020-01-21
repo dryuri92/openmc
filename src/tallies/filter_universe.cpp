@@ -11,39 +11,30 @@ namespace openmc {
 void
 UniverseFilter::from_xml(pugi::xml_node node)
 {
-  // Get material IDs and convert to indices in the global materials vector
-  auto universes = get_node_array<int32_t>(node, "bins");
-  for (auto& u : universes) {
-    auto search = model::universe_map.find(u);
-    if (search == model::universe_map.end()) {
-      std::stringstream err_msg;
-      err_msg << "Could not find universe " << u
-              << " specified on tally filter.";
-      throw std::runtime_error{err_msg.str()};
-    }
-    u = search->second;
-  }
-
-  this->set_universes(universes);
+  universes_ = get_node_array<int32_t>(node, "bins");
+  n_bins_ = universes_.size();
 }
 
 void
-UniverseFilter::set_universes(gsl::span<int32_t> universes)
+UniverseFilter::initialize()
 {
-  // Clear existing universes
-  universes_.clear();
-  universes_.reserve(universes.size());
-  map_.clear();
-
-  // Update universes and mapping
-  for (auto& index : universes) {
-    Expects(index >= 0);
-    Expects(index < model::universes.size());
-    universes_.push_back(index);
-    map_[index] = universes_.size() - 1;
+  // Convert universe IDs to indices of the global array.
+  for (auto& u : universes_) {
+    auto search = model::universe_map.find(u);
+    if (search != model::universe_map.end()) {
+      u = search->second;
+    } else {
+      std::stringstream err_msg;
+      err_msg << "Could not find universe " << u
+              << " specified on tally filter.";
+      fatal_error(err_msg);
+    }
   }
 
-  n_bins_ = universes_.size();
+  // Populate the index->bin map.
+  for (int i = 0; i < universes_.size(); i++) {
+    map_[universes_[i]] = i;
+  }
 }
 
 void

@@ -41,9 +41,16 @@ const
       match.weights_.push_back(1.0);
     }
   } else {
+
     model::meshes[mesh_]->bins_crossed(p, match.bins_, match.weights_);
-  }
+    //if (match.bins_.size() > 1){
+    //std :: cout << "LIST OF BINS\n";
+    //for (auto it = match.bins_.begin();it !=match.bins_.end();it++){
+    //	std :: cout << *it << std ::endl;
+    //}
+    }
 }
+
 
 void
 MeshFilter::to_statepoint(hid_t filter_group) const
@@ -58,8 +65,8 @@ MeshFilter::text_label(int bin) const
   auto& mesh = *model::meshes[mesh_];
   int n_dim = mesh.n_dimension_;
 
-  std::vector<int> ijk(n_dim);
-  mesh.get_indices_from_bin(bin, ijk.data());
+  int ijk[n_dim];
+  mesh.get_indices_from_bin(bin, ijk);
 
   std::stringstream out;
   out << "Mesh Index (" << ijk[0];
@@ -74,7 +81,8 @@ void
 MeshFilter::set_mesh(int32_t mesh)
 {
   mesh_ = mesh;
-  n_bins_ = model::meshes[mesh_]->n_bins();
+  n_bins_ = 1;
+  for (auto dim : model::meshes[mesh_]->shape_) n_bins_ *= dim;
 }
 
 //==============================================================================

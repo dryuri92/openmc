@@ -543,6 +543,20 @@ class IncidentNeutron(EqualityMixin):
                     tgroup = group['total_nu']
                     rx.derived_products.append(Product.from_hdf5(tgroup))
 
+        # Build redundant reactions. Start from the highest MT number because
+        # high MTs never depend on lower MTs.
+        for mt_sum in sorted(SUM_RULES, reverse=True):
+            if mt_sum not in data:
+                rxs = [data[mt] for mt in SUM_RULES[mt_sum] if mt in data]
+                if len(rxs) > 0:
+                    data.reactions[mt_sum] = rx = Reaction(mt_sum)
+                    rx.redundant = True
+                    if rx.mt == 18 and 'total_nu' in group:
+                        tgroup = group['total_nu']
+                        rx.derived_products.append(Product.from_hdf5(tgroup))
+                    for T in data.temperatures:
+                        rx.xs[T] = Sum([rx_i.xs[T] for rx_i in rxs])
+
         # Read unresolved resonance probability tables
         if 'urr' in group:
             urr_group = group['urr']
@@ -801,14 +815,15 @@ class IncidentNeutron(EqualityMixin):
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             # Run NJOY to create an ACE library
-            kwargs.setdefault('ace', os.path.join(tmpdir, 'ace'))
-            kwargs.setdefault('xsdir', os.path.join(tmpdir, 'xsdir'))
-            kwargs.setdefault('pendf', os.path.join(tmpdir, 'pendf'))
+            ace_file = os.path.join(tmpdir, 'ace')
+            xsdir_file = os.path.join(tmpdir, 'xsdir')
+            pendf_file = os.path.join(tmpdir, 'pendf')
             kwargs['evaluation'] = evaluation
-            make_ace(filename, temperatures, **kwargs)
+            make_ace(filename, temperatures, ace_file, xsdir_file,
+                     pendf_file, **kwargs)
 
             # Create instance from ACE tables within library
-            lib = Library(kwargs['ace'])
+            lib = Library(ace_file)
             data = cls.from_ace(lib.tables[0])
             for table in lib.tables[1:]:
                 data.add_temperature_from_ace(table)
@@ -820,7 +835,7 @@ class IncidentNeutron(EqualityMixin):
 
             # Add 0K elastic scattering cross section
             if '0K' not in data.energy:
-                pendf = Evaluation(kwargs['pendf'])
+                pendf = Evaluation(pendf_file)
                 file_obj = StringIO(pendf.section[3, 2])
                 get_head_record(file_obj)
                 params, xs = get_tab1_record(file_obj)

@@ -75,7 +75,7 @@ void title()
     "         Copyright | 2011-2019 MIT and OpenMC contributors\n" <<
     "           License | http://openmc.readthedocs.io/en/latest/license.html\n" <<
     "           Version | " << VERSION_MAJOR << '.' << VERSION_MINOR << '.'
-    << VERSION_RELEASE << (VERSION_DEV ? "-dev" : "") << '\n';
+    << VERSION_RELEASE << '\n';
 #ifdef GIT_SHA1
   std::cout << "          Git SHA1 | " << GIT_SHA1 << '\n';
 #endif
@@ -617,7 +617,6 @@ const std::unordered_map<int, const char*> score_names = {
   {SCORE_FISS_Q_PROMPT,      "Prompt fission power"},
   {SCORE_FISS_Q_RECOV,       "Recoverable fission power"},
   {SCORE_CURRENT,            "Current"},
-  {SCORE_HEATING,            "Heating"},
 };
 
 //! Create an ASCII output file showing all tally results.

@@ -3,8 +3,6 @@
 
 #include <vector>
 
-#include <gsl/gsl>
-
 #include "openmc/tallies/filter.h"
 
 namespace openmc {
@@ -19,13 +17,7 @@ namespace openmc {
 class DelayedGroupFilter : public Filter
 {
 public:
-  //----------------------------------------------------------------------------
-  // Constructors, destructors
-
   ~DelayedGroupFilter() = default;
-
-  //----------------------------------------------------------------------------
-  // Methods
 
   std::string type() const override {return "delayedgroup";}
 
@@ -37,17 +29,6 @@ public:
   void to_statepoint(hid_t filter_group) const override;
 
   std::string text_label(int bin) const override;
-
-  //----------------------------------------------------------------------------
-  // Accessors
-
-  const std::vector<int>& groups() const { return groups_; }
-
-  void set_groups(gsl::span<int> groups);
-
-private:
-  //----------------------------------------------------------------------------
-  // Data members
 
   std::vector<int> groups_;
 };

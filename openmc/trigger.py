@@ -31,6 +31,7 @@ class Trigger(object):
     """
 
     def __init__(self, trigger_type, threshold):
+        # Initialize Mesh class attributes
         self.trigger_type = trigger_type
         self.threshold = threshold
         self._scores = []

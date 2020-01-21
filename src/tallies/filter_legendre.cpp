@@ -10,16 +10,7 @@ namespace openmc {
 void
 LegendreFilter::from_xml(pugi::xml_node node)
 {
-  this->set_order(std::stoi(get_node_value(node, "order")));
-}
-
-void
-LegendreFilter::set_order(int order)
-{
-  if (order < 0) {
-    throw std::invalid_argument{"Legendre order must be non-negative."};
-  }
-  order_ = order;
+  order_ = std::stoi(get_node_value(node, "order"));
   n_bins_ = order_ + 1;
 }
 
@@ -27,8 +18,8 @@ void
 LegendreFilter::get_all_bins(const Particle* p, int estimator,
                              FilterMatch& match) const
 {
-  std::vector<double> wgt(n_bins_);
-  calc_pn_c(order_, p->mu_, wgt.data());
+  double wgt[n_bins_];
+  calc_pn_c(order_, p->mu_, wgt);
   for (int i = 0; i < n_bins_; i++) {
     match.bins_.push_back(i);
     match.weights_.push_back(wgt[i]);
@@ -69,7 +60,7 @@ openmc_legendre_filter_get_order(int32_t index, int* order)
   }
 
   // Output the order.
-  *order = filt->order();
+  *order = filt->order_;
   return 0;
 }
 
@@ -90,7 +81,8 @@ openmc_legendre_filter_set_order(int32_t index, int order)
   }
 
   // Update the filter.
-  filt->set_order(order);
+  filt->order_ = order;
+  filt->n_bins_ = order + 1;
   return 0;
 }
 

@@ -37,6 +37,10 @@ int openmc_init(int argc, char* argv[], const void* intracomm)
 {
   using namespace openmc;
 
+
+  char cCurrentPath[256];
+
+
 #ifdef OPENMC_MPI
   // Check if intracomm was passed
   MPI_Comm comm;
@@ -68,7 +72,7 @@ int openmc_init(int argc, char* argv[], const void* intracomm)
 
   // Initialize random number generator -- if the user specifies a seed, it
   // will be re-initialized later
-  openmc::openmc_set_seed(DEFAULT_SEED);
+  openmc_set_seed(DEFAULT_SEED);
 
   // Read XML input files
   read_input_xml();

@@ -392,7 +392,7 @@ Mgxs::Mgxs(const std::string& in_name, const std::vector<double>& mat_kTs,
     int num_interp_points = 2;
     if (settings::temperature_method == TEMPERATURE_NEAREST) num_interp_points = 1;
     std::vector<double> interp(micros.size());
-    std::vector<double> temp_indices(micros.size());
+    std::vector<int> temp_indices(micros.size());
     for (int interp_point = 0; interp_point < num_interp_points; interp_point++) {
       for (int m = 0; m < micros.size(); m++) {
         interp[m] = (1. - micro_t_interp[m]) * atom_densities[m];
